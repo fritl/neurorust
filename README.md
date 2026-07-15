@@ -3,7 +3,7 @@
 ## Phase 0: Setup
 
 ## Phase 1: Linear Algebra
-- [ ] Implement matrix type
+- [X] Implement matrix type
 - [ ] Implement matrix operations (add, subtract, multiply, transpose, element-wise multiply)
 - [ ] Implement vector operations (dot product, add, scale)
 - [ ] Unit test each operation against hand-calculated examples
