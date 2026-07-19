@@ -20,9 +20,9 @@
 - [X] Test forward pass output against a hand-calculated tiny network
 
 ## Phase 4: Weight Initialization
-- [ ] Implement random weight/bias initialization
-- [ ] Implement at least one sensible init scheme (e.g. Xavier/He)
-- [ ] Verify initialized values fall in expected ranges
+- [X] Implement random weight/bias initialization
+- [X] Implement at least one sensible init scheme (e.g. Xavier/He)
+- [X] Verify initialized values fall in expected ranges
 
 ## Phase 5: Loss Functions
 - [ ] Implement MSE + derivative
