@@ -1,5 +1,6 @@
 use std::ops;
 
+#[derive(Debug, PartialEq)]
 pub struct Matrix {
     rows: usize,
     columns: usize,
@@ -54,6 +55,14 @@ impl Matrix {
 
     pub fn as_slice(&self) -> &[f32] {
         &self.data
+    }
+
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    pub fn columns(&self) -> usize {
+        self.columns
     }
 
     pub fn shape(&self) -> (usize, usize) {

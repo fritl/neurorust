@@ -1,8 +1,10 @@
 use crate::matrix::Matrix;
+use crate::nn::activations;
 use std::hint;
 use std::time::Instant;
 
 mod matrix;
+mod nn;
 
 fn main() {
     let shape = (1024, 1024);

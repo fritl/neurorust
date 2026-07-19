@@ -11,7 +11,6 @@
 - [ ] Implement Sigmoid + derivative
 - [ ] Implement ReLU + derivative
 - [ ] Implement Tanh + derivative
-- [ ] Implement Softmax (for classification output)
 - [ ] Unit test each against hand-calculated values
 
 ## Phase 3: Forward Pass
@@ -27,7 +26,7 @@
 
 ## Phase 5: Loss Functions
 - [ ] Implement MSE + derivative
-- [ ] Implement Cross-Entropy + derivative
+- [ ] Implement Softmax + Cross-Entropy + derivative
 - [ ] Unit test each against hand-calculated values
 
 ## Phase 6: Backpropagation
