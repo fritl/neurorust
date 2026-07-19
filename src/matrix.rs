@@ -1,6 +1,6 @@
 use std::ops;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Matrix {
     rows: usize,
     columns: usize,

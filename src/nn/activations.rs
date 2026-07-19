@@ -1,14 +1,13 @@
 use crate::matrix::Matrix;
 
-trait Activation {
+pub trait Activation {
     fn forward(&self, mat: &Matrix) -> Matrix;
     fn backward(&self, mat: &Matrix) -> Matrix;
 }
 
-struct ReLU;
-struct Sigmoid;
-struct Tanh;
-struct Softmax;
+pub struct ReLU;
+pub struct Sigmoid;
+pub struct Tanh;
 
 impl Activation for ReLU {
     fn forward(&self, mat: &Matrix) -> Matrix {

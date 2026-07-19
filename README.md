@@ -8,16 +8,16 @@
 - [X] Unit test each operation against hand-calculated examples
 
 ## Phase 2: Activation Functions
-- [ ] Implement Sigmoid + derivative
-- [ ] Implement ReLU + derivative
-- [ ] Implement Tanh + derivative
-- [ ] Unit test each against hand-calculated values
+- [X] Implement Sigmoid + derivative
+- [X] Implement ReLU + derivative
+- [X] Implement Tanh + derivative
+- [X] Unit test each against hand-calculated values
 
 ## Phase 3: Forward Pass
-- [ ] Implement a single layer's forward computation
-- [ ] Chain multiple layers into a full forward pass
-- [ ] Cache intermediate values needed later for backprop
-- [ ] Test forward pass output against a hand-calculated tiny network
+- [X] Implement a single layer's forward computation
+- [X] Chain multiple layers into a full forward pass
+- [X] Cache intermediate values needed later for backprop
+- [X] Test forward pass output against a hand-calculated tiny network
 
 ## Phase 4: Weight Initialization
 - [ ] Implement random weight/bias initialization
