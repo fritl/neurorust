@@ -83,20 +83,6 @@ impl Matrix {
         }
         new_mat
     }
-
-    pub fn optimized_matmul(&self, other: &Matrix) -> Matrix {
-        assert_eq!(self.columns, other.rows, "Shape mismatch");
-        let mut new_mat = Matrix::zeros(self.rows, other.columns);
-        for i in 0..self.rows {
-            for k in 0..self.columns {
-                for j in 0..other.columns {
-                    new_mat.data[i * new_mat.columns + j] +=
-                        self.data[i * self.columns + k] * other.data[k * other.columns + j];
-                }
-            }
-        }
-        new_mat
-    }
 }
 
 impl ops::Add<&Matrix> for &Matrix {
@@ -154,12 +140,11 @@ impl ops::Mul<&Matrix> for &Matrix {
         assert_eq!(self.columns, other.rows, "Shape mismatch");
         let mut new_mat = Matrix::zeros(self.rows, other.columns);
         for i in 0..self.rows {
-            for j in 0..other.columns {
-                let mut sum = 0.0;
-                for k in 0..self.columns {
-                    sum += self.get(i, k) * other.get(k, j);
+            for k in 0..self.columns {
+                for j in 0..other.columns {
+                    new_mat.data[i * new_mat.columns + j] +=
+                        self.data[i * self.columns + k] * other.data[k * other.columns + j];
                 }
-                new_mat.set(i, j, sum);
             }
         }
         new_mat

@@ -5,8 +5,7 @@
 ## Phase 1: Linear Algebra
 - [X] Implement matrix type
 - [X] Implement matrix operations (add, subtract, multiply, transpose, element-wise multiply)
-- [ ] Implement vector operations (dot product, add, scale)
-- [ ] Unit test each operation against hand-calculated examples
+- [X] Unit test each operation against hand-calculated examples
 
 ## Phase 2: Activation Functions
 - [ ] Implement Sigmoid + derivative

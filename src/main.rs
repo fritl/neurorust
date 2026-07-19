@@ -5,9 +5,9 @@ use std::time::Instant;
 mod matrix;
 
 fn main() {
-    let shape = (1024, 512);
+    let shape = (1024, 1024);
     let mut mat_a = Matrix::zeros(shape.0, shape.1);
-    let shape = (512, 4096);
+    let shape = (1024, 1024);
     let mut mat_b = Matrix::zeros(shape.0, shape.1);
 
     for i in 0..mat_a.shape().0 {
@@ -28,11 +28,4 @@ fn main() {
     hint::black_box(_res_standard);
     let time = start_standard.elapsed();
     println!("Standard time: {time:?}");
-
-    println!("Start optimized");
-    let start_optimized = Instant::now();
-    let _res_optimized = &mat_a.optimized_matmul(&mat_b);
-    hint::black_box(_res_optimized);
-    let time = start_optimized.elapsed();
-    println!("Optimized time: {time:?}");
 }
