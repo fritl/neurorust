@@ -57,6 +57,10 @@ impl Matrix {
         &self.data
     }
 
+    pub fn as_mut_slice(&mut self) -> &mut [f32] {
+        &mut self.data
+    }
+
     pub fn rows(&self) -> usize {
         self.rows
     }
@@ -91,6 +95,10 @@ impl Matrix {
             }
         }
         new_mat
+    }
+
+    pub fn exp(&mut self) {
+        self.data.iter_mut().for_each(|x| *x = x.exp());
     }
 }
 

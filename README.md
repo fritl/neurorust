@@ -25,9 +25,9 @@
 - [X] Verify initialized values fall in expected ranges
 
 ## Phase 5: Loss Functions
-- [ ] Implement MSE + derivative
-- [ ] Implement Softmax + Cross-Entropy + derivative
-- [ ] Unit test each against hand-calculated values
+- [X] Implement MSE + derivative
+- [X] Implement Softmax + Cross-Entropy + derivative
+- [X] Unit test each against hand-calculated values
 
 ## Phase 6: Backpropagation
 - [ ] Work out gradients by hand for a small 2-3 layer network on paper
