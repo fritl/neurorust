@@ -100,6 +100,16 @@ impl Matrix {
     pub fn exp(&mut self) {
         self.data.iter_mut().for_each(|x| *x = x.exp());
     }
+
+    pub fn row_sum(&self) -> Matrix {
+        let mut result = Matrix::zeros(self.rows, 1);
+        for i in 0..self.rows() {
+            result.data[i] = self.as_slice()[i * self.columns()..(i + 1) * self.columns()]
+                .iter()
+                .sum();
+        }
+        result
+    }
 }
 
 impl ops::Add<&Matrix> for &Matrix {

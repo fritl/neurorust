@@ -5,8 +5,8 @@ pub trait Loss {
     fn backward(&self, pred: &Matrix, target: &Matrix) -> Matrix;
 }
 
-struct MSE;
-struct SoftmaxCrossEntropy;
+pub struct MSE;
+pub struct SoftmaxCrossEntropy;
 
 impl Loss for MSE {
     fn forward(&self, pred: &Matrix, target: &Matrix) -> f32 {

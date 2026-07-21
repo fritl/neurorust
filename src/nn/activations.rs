@@ -5,8 +5,11 @@ pub trait Activation {
     fn backward(&self, mat: &Matrix) -> Matrix;
 }
 
+#[derive(Clone)]
 pub struct ReLU;
+#[derive(Clone)]
 pub struct Sigmoid;
+#[derive(Clone)]
 pub struct Tanh;
 
 impl Activation for ReLU {

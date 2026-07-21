@@ -32,8 +32,8 @@
 ## Phase 6: Backpropagation
 - [ ] Work out gradients by hand for a small 2-3 layer network on paper
 - [ ] Implement output layer gradient calculation
-- [ ] Implement gradient propagation backward through hidden layers (chain rule)
-- [ ] Accumulate weight and bias gradients
+- [X] Implement gradient propagation backward through hidden layers (chain rule)
+- [X] Accumulate weight and bias gradients
 - [ ] Verify against the hand-calculated example (and/or numerical gradient checking)
 
 ## Phase 7: Optimizer
@@ -43,8 +43,8 @@
 - [ ] (Optional) Implement Adam
 
 ## Phase 8: Training Loop
-- [ ] Implement epoch/batch loop
-- [ ] Track and print loss over time
+- [X] Implement epoch/batch loop
+- [X] Track and print loss over time
 - [ ] Train and validate on XOR (sanity check: not linearly separable)
 - [ ] Write a parser for a real dataset (e.g. MNIST CSV/IDX) by hand
 - [ ] Train and validate on that dataset
