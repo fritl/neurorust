@@ -80,7 +80,7 @@ impl Layer {
         let columns = z.columns();
         for i in 0..z.rows() {
             for j in 0..columns {
-                z.as_mut_slice()[i * columns + j] *= self.bias.as_slice()[i];
+                z.as_mut_slice()[i * columns + j] += self.bias.as_slice()[i];
             }
         }
         let a = self.activation.forward(&z);
@@ -161,9 +161,11 @@ mod tests {
 
         assert_matrix_approx_eq(&result, &expected, 1e-5);
     }
+
     #[test]
     fn with_random_weights_has_correct_shape() {
-        let layer = Layer::with_random_weights(3, 2, Box::new(ReLU), Some(1));
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3001);
+        let layer = Layer::with_random_weights(3, 2, Box::new(ReLU), &mut rng);
 
         assert_eq!(layer.weights.shape(), (2, 3));
         assert_eq!(layer.bias.shape(), (2, 1));
@@ -171,7 +173,8 @@ mod tests {
 
     #[test]
     fn with_random_weights_values_within_range() {
-        let layer = Layer::with_random_weights(10, 10, Box::new(ReLU), Some(1));
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3001);
+        let layer = Layer::with_random_weights(10, 10, Box::new(ReLU), &mut rng);
 
         for &value in layer.weights.as_slice() {
             assert!(value >= -0.5 && value < 0.5, "value {} out of range", value);
@@ -180,7 +183,8 @@ mod tests {
 
     #[test]
     fn with_random_weights_bias_initialized_to_zero() {
-        let layer = Layer::with_random_weights(3, 2, Box::new(ReLU), Some(1));
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3001);
+        let layer = Layer::with_random_weights(3, 2, Box::new(ReLU), &mut rng);
 
         for &value in layer.bias.as_slice() {
             assert_eq!(value, 0.0);
@@ -188,33 +192,18 @@ mod tests {
     }
 
     #[test]
-    fn with_random_weights_same_seed_produces_same_weights() {
-        let layer_a = Layer::with_random_weights(5, 4, Box::new(ReLU), Some(42));
-        let layer_b = Layer::with_random_weights(5, 4, Box::new(ReLU), Some(42));
-
-        assert_eq!(layer_a.weights.as_slice(), layer_b.weights.as_slice());
-    }
-
-    #[test]
-    fn with_random_weights_different_seed_produces_different_weights() {
-        let layer_a = Layer::with_random_weights(5, 4, Box::new(ReLU), Some(1));
-        let layer_b = Layer::with_random_weights(5, 4, Box::new(ReLU), Some(2));
+    fn with_random_weights_different_call_produces_different_weights() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3001);
+        let layer_a = Layer::with_random_weights(5, 4, Box::new(ReLU), &mut rng);
+        let layer_b = Layer::with_random_weights(5, 4, Box::new(ReLU), &mut rng);
 
         assert_ne!(layer_a.weights.as_slice(), layer_b.weights.as_slice());
     }
 
     #[test]
-    fn with_random_weights_default_seed_is_reproducible() {
-        // no seed given -> falls back to the same default seed both times
-        let layer_a = Layer::with_random_weights(5, 4, Box::new(ReLU), None);
-        let layer_b = Layer::with_random_weights(5, 4, Box::new(ReLU), None);
-
-        assert_eq!(layer_a.weights.as_slice(), layer_b.weights.as_slice());
-    }
-
-    #[test]
     fn with_uniform_xavier_weights_has_correct_shape() {
-        let layer = Layer::with_uniform_xavier_weights(3, 2, Box::new(ReLU), Some(1));
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3001);
+        let layer = Layer::with_uniform_xavier_weights(3, 2, Box::new(ReLU), &mut rng);
 
         assert_eq!(layer.weights.shape(), (2, 3));
         assert_eq!(layer.bias.shape(), (2, 1));
@@ -222,6 +211,7 @@ mod tests {
 
     #[test]
     fn with_uniform_xavier_weights_values_within_expected_range() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3001);
         let input_neurons = 10;
         let output_neurons = 10;
         let expected_limit = (6.0 / (input_neurons + output_neurons) as f32).sqrt();
@@ -230,7 +220,7 @@ mod tests {
             input_neurons,
             output_neurons,
             Box::new(ReLU),
-            Some(1),
+            &mut rng,
         );
 
         for &value in layer.weights.as_slice() {
@@ -246,7 +236,8 @@ mod tests {
 
     #[test]
     fn with_uniform_xavier_weights_bias_initialized_to_zero() {
-        let layer = Layer::with_uniform_xavier_weights(3, 2, Box::new(ReLU), Some(1));
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3001);
+        let layer = Layer::with_uniform_xavier_weights(3, 2, Box::new(ReLU), &mut rng);
 
         for &value in layer.bias.as_slice() {
             assert_eq!(value, 0.0);
@@ -255,17 +246,20 @@ mod tests {
 
     #[test]
     fn with_uniform_xavier_weights_same_seed_produces_same_weights() {
-        let layer_a = Layer::with_uniform_xavier_weights(5, 4, Box::new(ReLU), Some(42));
-        let layer_b = Layer::with_uniform_xavier_weights(5, 4, Box::new(ReLU), Some(42));
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3001);
+        let layer_a = Layer::with_uniform_xavier_weights(5, 4, Box::new(ReLU), &mut rng);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3001);
+        let layer_b = Layer::with_uniform_xavier_weights(5, 4, Box::new(ReLU), &mut rng);
 
         assert_eq!(layer_a.weights.as_slice(), layer_b.weights.as_slice());
     }
 
     #[test]
     fn with_uniform_xavier_weights_range_shrinks_with_larger_layer() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3001);
         // larger n_in + n_out should produce a smaller xavier limit
-        let small_layer = Layer::with_uniform_xavier_weights(2, 2, Box::new(ReLU), Some(1));
-        let large_layer = Layer::with_uniform_xavier_weights(1000, 1000, Box::new(ReLU), Some(1));
+        let small_layer = Layer::with_uniform_xavier_weights(2, 2, Box::new(ReLU), &mut rng);
+        let large_layer = Layer::with_uniform_xavier_weights(1000, 1000, Box::new(ReLU), &mut rng);
 
         let small_max = small_layer
             .weights

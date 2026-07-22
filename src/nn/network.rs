@@ -7,6 +7,7 @@ use crate::{
     },
 };
 use rand::SeedableRng;
+use std::time::Instant;
 
 pub struct Network<L: loss::Loss> {
     layers: Vec<layer::Layer>,
@@ -63,10 +64,17 @@ impl<L: loss::Loss> Network<L> {
     }
 
     pub fn train(&mut self, x: &Matrix, y: &Matrix, epochs: u32) {
+        let start = Instant::now();
         for i in 0..epochs {
+            let epoch_start = Instant::now();
             let (pred, loss) = self.forward(x, y);
-            println!("Epoch {i} / {epochs} Loss: {loss}");
             self.backward(&pred, y);
+            let epoch_duration = epoch_start.elapsed();
+            let avg_epoch_duration = start.elapsed() / (i + 1);
+            println!(
+                "Epoch {i} / {epochs} Loss: {loss} Time: {epoch_duration:?} eta: {:?}",
+                avg_epoch_duration * (epochs - i)
+            );
         }
     }
 }
