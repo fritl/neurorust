@@ -60,7 +60,8 @@ impl Loss for SoftmaxCrossEntropy {
     }
 
     fn backward(&self, pred: &Matrix, target: &Matrix) -> Matrix {
-        &self.softmax(pred) - target
+        let diff = &self.softmax(pred) - target;
+        &diff * (1.0 / pred.columns() as f32)
     }
 }
 

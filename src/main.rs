@@ -44,10 +44,10 @@ fn main() {
 
     let mut network = nn::network::Network::from_vec(
         &vec![784, 100, 10],
-        nn::activations::Sigmoid,
+        nn::activations::ReLU,
         Some(1221),
-        nn::loss::MSE,
-        1.0,
+        nn::loss::SoftmaxCrossEntropy,
+        0.1,
     );
     println!("Begin Training");
     network.train(&train_images_matrix, &train_labels_matrix, 10000);
