@@ -14,25 +14,22 @@ fn main() {
         mnist_parser::MnistData::new(&train_images_file).expect("Failed to parse training images");
     let train_labels =
         mnist_parser::MnistData::new(&train_labels_file).expect("Failed to parse training labels");
-    let num_samples = 10000;
     let train_images_matrix = Matrix::from_vec(
-        num_samples as usize,
+        train_labels.sizes[0] as usize,
         (train_images.sizes[1] * train_images.sizes[2]) as usize,
         train_images
             .data
             .iter()
-            .take(num_samples * 784)
             .map(|&x| x as f32 / 255.0)
             .collect(),
     )
     .transpose();
     let train_labels_matrix = Matrix::from_vec(
-        num_samples as usize,
+        train_labels.sizes[0] as usize,
         10,
         train_labels
             .data
             .iter()
-            .take(num_samples)
             .flat_map(|&x| {
                 let mut values = vec![0.0; 10];
                 values[x as usize] = 1.0;
@@ -50,7 +47,7 @@ fn main() {
         0.1,
     );
     println!("Begin Training");
-    network.train(&train_images_matrix, &train_labels_matrix, 10000);
+    network.train(&train_images_matrix, &train_labels_matrix, 10000, 128);
 }
 
 fn train_xor() -> Network<nn::loss::MSE> {
@@ -64,6 +61,6 @@ fn train_xor() -> Network<nn::loss::MSE> {
     let xor_data = matrix::Matrix::from_array([[0.0, 0.0, 1.0, 1.0], [0.0, 1.0, 0.0, 1.0]]);
     let xor_result = matrix::Matrix::from_array([[0.0, 1.0, 1.0, 0.0]]);
 
-    network.train(&xor_data, &xor_result, 10000);
+    network.train(&xor_data, &xor_result, 10000, 128);
     network
 }

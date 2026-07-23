@@ -63,16 +63,43 @@ impl<L: loss::Loss> Network<L> {
         }
     }
 
-    pub fn train(&mut self, x: &Matrix, y: &Matrix, epochs: u32) {
+    pub fn train(&mut self, x: &Matrix, y: &Matrix, epochs: u32, batch_size: usize) {
+        assert_eq!(x.columns(), y.columns());
         let start = Instant::now();
+        let num_batches = x.columns().div_ceil(batch_size);
         for i in 0..epochs {
+            let mut loss_sum = 0.0;
             let epoch_start = Instant::now();
-            let (pred, loss) = self.forward(x, y);
-            self.backward(&pred, y);
+            //TODO: Shuffle input
+            for j in 0..num_batches {
+                let start_col = j * batch_size;
+                let end_col = ((j + 1) * batch_size).min(x.columns());
+                let cur_batch_size = end_col - start_col;
+
+                let mut batch_data = Vec::with_capacity(x.rows() * cur_batch_size);
+                for r in 0..x.rows() {
+                    let start_idx = r * x.columns() + start_col;
+                    batch_data
+                        .extend_from_slice(&x.as_slice()[start_idx..start_idx + cur_batch_size]);
+                }
+
+                let mut label_data = Vec::with_capacity(y.rows() * cur_batch_size);
+                for r in 0..y.rows() {
+                    let start_idx = r * y.columns() + start_col;
+                    label_data
+                        .extend_from_slice(&y.as_slice()[start_idx..start_idx + cur_batch_size]);
+                }
+                let batch = Matrix::from_vec(x.rows(), cur_batch_size, batch_data);
+                let labels = Matrix::from_vec(y.rows(), cur_batch_size, label_data);
+                let (pred, loss) = self.forward(&batch, &labels);
+                loss_sum += loss;
+                self.backward(&pred, &labels);
+            }
             let epoch_duration = epoch_start.elapsed();
             let avg_epoch_duration = start.elapsed() / (i + 1);
             println!(
-                "Epoch {i} / {epochs} Loss: {loss} Time: {epoch_duration:?} eta: {:?}",
+                "Epoch {i} / {epochs} Average Loss: {} Time: {epoch_duration:?} eta: {:?}",
+                loss_sum / num_batches as f32,
                 avg_epoch_duration * (epochs - i)
             );
         }
