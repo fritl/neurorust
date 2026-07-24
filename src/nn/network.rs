@@ -104,4 +104,11 @@ impl<L: loss::Loss> Network<L> {
             );
         }
     }
+    pub fn predict(&mut self, x: &Matrix) -> Matrix {
+        let mut x = x.clone();
+        for l in &mut self.layers {
+            x = l.forward(&x);
+        }
+        x
+    }
 }
