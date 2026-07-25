@@ -7,7 +7,6 @@ use crate::{
     },
 };
 use rand::SeedableRng;
-use std::time::Instant;
 
 pub struct Network<L: loss::Loss> {
     layers: Vec<layer::Layer>,
@@ -65,11 +64,9 @@ impl<L: loss::Loss> Network<L> {
 
     pub fn train(&mut self, x: &Matrix, y: &Matrix, epochs: u32, batch_size: usize) {
         assert_eq!(x.columns(), y.columns());
-        let start = Instant::now();
         let num_batches = x.columns().div_ceil(batch_size);
         for i in 0..epochs {
             let mut loss_sum = 0.0;
-            let epoch_start = Instant::now();
             //TODO: Shuffle input
             for j in 0..num_batches {
                 let start_col = j * batch_size;
@@ -95,12 +92,16 @@ impl<L: loss::Loss> Network<L> {
                 loss_sum += loss;
                 self.backward(&pred, &labels);
             }
-            let epoch_duration = epoch_start.elapsed();
-            let avg_epoch_duration = start.elapsed() / (i + 1);
+            web_sys::console::log_1(
+                &format!(
+                    "Epoch {i} / {epochs} Average Loss: {} ",
+                    loss_sum / num_batches as f32,
+                )
+                .into(),
+            );
             println!(
-                "Epoch {i} / {epochs} Average Loss: {} Time: {epoch_duration:?} eta: {:?}",
+                "Epoch {i} / {epochs} Average Loss: {} ",
                 loss_sum / num_batches as f32,
-                avg_epoch_duration * (epochs - i)
             );
         }
     }

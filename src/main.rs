@@ -1,6 +1,6 @@
-use crate::{eval::accuracy, matrix::Matrix, nn::network::Network};
 use std::fs::File;
 
+use crate::{eval::accuracy, matrix::Matrix, nn::network::Network};
 mod eval;
 mod matrix;
 mod mnist_parser;

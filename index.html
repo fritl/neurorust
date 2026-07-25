@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Greet</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            background: #1e1e1e;
+            color: #eee;
+            padding: 24px;
+        }
+
+        #draw-canvas {
+            border: 2px solid #555;
+            background: black;
+            cursor: crosshair;
+            image-rendering: pixelated;
+        }
+
+        #preview-canvas {
+            border: 1px solid #555;
+            background: black;
+            image-rendering: pixelated;
+            width: 112px;
+            height: 112px;
+        }
+
+        button {
+            padding: 8px 16px;
+            cursor: pointer;
+        }
+
+        .row {
+            display: flex;
+            gap: 16px;
+            align-items: flex-start;
+        }
+
+        pre {
+            max-width: 500px;
+            max-height: 200px;
+            overflow: auto;
+            background: #111;
+            padding: 8px;
+            font-size: 11px;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>Ziffer zeichnen (28×28 Export)</h2>
+
+    <div class="row">
+        <div>
+            <p>Zeichenfläche (280×280, wird auf 28×28 runterskaliert)</p>
+            <canvas id="draw-canvas" width="280" height="280"></canvas>
+        </div>
+        <div>
+            <p>28×28 Vorschau</p>
+            <canvas id="preview-canvas" width="28" height="28"></canvas>
+        </div>
+    </div>
+
+    <div class="row">
+        <button id="clear-btn">Löschen</button>
+        <button id="export-btn">Als f32 Array exportieren</button>
+    </div>
+
+    <pre id="output"></pre>
+    Result:
+    <pre id="result"></pre>
+
+    <script type="module">
+        import init, {WasmNet} from "./pkg/neural_net.js"
+        await init();
+        console.log("Training");
+        const net = new WasmNet()
+        const acc = net.train()
+        console.log(acc)
+        const DRAW_SIZE = 280;
+        const TARGET_SIZE = 28;
+        const BRUSH_RADIUS = 10; // in draw-canvas Pixeln, entspricht ~1px auf 28x28
+
+        const drawCanvas = document.getElementById('draw-canvas');
+        const drawCtx = drawCanvas.getContext('2d');
+        const previewCanvas = document.getElementById('preview-canvas');
+        const previewCtx = previewCanvas.getContext('2d');
+        const output = document.getElementById('output');
+        const result = document.getElementById('result');
+
+        // Init: schwarzer Hintergrund, weiß zeichnen (wie MNIST)
+        drawCtx.fillStyle = 'black';
+        drawCtx.fillRect(0, 0, DRAW_SIZE, DRAW_SIZE);
+        drawCtx.strokeStyle = 'white';
+        drawCtx.fillStyle = 'white';
+        drawCtx.lineWidth = BRUSH_RADIUS * 2;
+        drawCtx.lineCap = 'round';
+        drawCtx.lineJoin = 'round';
+
+        let isDrawing = false;
+        let lastX = 0;
+        let lastY = 0;
+
+        function getPos(e) {
+            const rect = drawCanvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return {
+                x: (clientX - rect.left) * (DRAW_SIZE / rect.width),
+                y: (clientY - rect.top) * (DRAW_SIZE / rect.height),
+            };
+        }
+
+        function startDraw(e) {
+            isDrawing = true;
+            const pos = getPos(e);
+            lastX = pos.x;
+            lastY = pos.y;
+            // Punkt zeichnen, falls nur geklickt statt gezogen wird
+            drawCtx.beginPath();
+            drawCtx.arc(pos.x, pos.y, BRUSH_RADIUS, 0, Math.PI * 2);
+            drawCtx.fill();
+            e.preventDefault();
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            const pos = getPos(e);
+            drawCtx.beginPath();
+            drawCtx.moveTo(lastX, lastY);
+            drawCtx.lineTo(pos.x, pos.y);
+            drawCtx.stroke();
+            lastX = pos.x;
+            lastY = pos.y;
+            e.preventDefault();
+        }
+
+        function stopDraw() {
+            isDrawing = false;
+        }
+
+        drawCanvas.addEventListener('mousedown', startDraw);
+        drawCanvas.addEventListener('mousemove', draw);
+        drawCanvas.addEventListener('mouseup', stopDraw);
+        drawCanvas.addEventListener('mouseleave', stopDraw);
+
+        drawCanvas.addEventListener('touchstart', startDraw);
+        drawCanvas.addEventListener('touchmove', draw);
+        drawCanvas.addEventListener('touchend', stopDraw);
+
+        document.getElementById('clear-btn').addEventListener('click', () => {
+            drawCtx.fillStyle = 'black';
+            drawCtx.fillRect(0, 0, DRAW_SIZE, DRAW_SIZE);
+            drawCtx.fillStyle = 'white';
+            previewCtx.clearRect(0, 0, TARGET_SIZE, TARGET_SIZE);
+            output.textContent = '';
+        });
+
+        // Downsamplen von 280x280 auf 28x28 und als Float32Array (0.0-1.0, Graustufen) zurückgeben.
+        function canvasToF32Array() {
+            // In die 28x28 Preview zeichnen (nutzt Canvas-eigene Interpolation beim Skalieren)
+            previewCtx.imageSmoothingEnabled = true;
+            previewCtx.clearRect(0, 0, TARGET_SIZE, TARGET_SIZE);
+            previewCtx.drawImage(drawCanvas, 0, 0, DRAW_SIZE, DRAW_SIZE, 0, 0, TARGET_SIZE, TARGET_SIZE);
+
+            const imageData = previewCtx.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE);
+            const pixels = imageData.data; // RGBA, Länge = 28*28*4
+
+            const result = new Float32Array(TARGET_SIZE * TARGET_SIZE);
+            for (let i = 0; i < TARGET_SIZE * TARGET_SIZE; i++) {
+                // R-Kanal reicht, da wir nur in Weiß auf Schwarz zeichnen (R=G=B)
+                const r = pixels[i * 4];
+                result[i] = r / 255.0;
+            }
+            return result;
+        }
+        function argmax(arr) {
+            let maxIdx = 0;
+            let maxVal = arr[0];
+            for (let i = 1; i < arr.length; i++) {
+                if (arr[i] > maxVal) {
+                    maxVal = arr[i];
+                    maxIdx = i;
+                }
+            }
+            return maxIdx;
+        }
+
+        document.getElementById('export-btn').addEventListener('click', () => {
+            const arr = canvasToF32Array();
+            // Als normales Array formatieren fürs Anzeigen/Kopieren
+            output.textContent = '[' + Array.from(arr).map(v => v.toFixed(3)).join(', ') + ']';
+
+            // arr ist hier ein Float32Array mit 784 Werten (28*28), row-major,
+            // passend zum Format, das eure Matrix::from_vec erwartet.
+            window.lastDigitArray = arr; // zum einfachen Zugriff aus der Console
+            const pred = net.predict(arr)
+            console.log(pred);
+            const digitPred = argmax(pred);
+            console.log(digitPred);
+            result.textContent = digitPred
+        });
+    </script>
+</body>
+
+</html>
