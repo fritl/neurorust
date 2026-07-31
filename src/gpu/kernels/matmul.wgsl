@@ -17,7 +17,9 @@ fn matmul(@builtin(global_invocation_id) id: vec3u) {
     if row >= dimensions.M || col >= dimensions.N { return; }
 
     mat_result[row * dimensions.N + col] = 0.0;
+    var sum: f32 = 0.0;
     for (var i = 0u; i < dimensions.K; i++) {
-        mat_result[row * dimensions.N + col] += mat_a[row * dimensions.K + i] * mat_b[i * dimensions.N + col];
+        sum += mat_a[row * dimensions.K + i] * mat_b[i * dimensions.N + col];
     }
+    mat_result[row * dimensions.N + col] += sum;
 }

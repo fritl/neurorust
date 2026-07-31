@@ -29,6 +29,7 @@ fn main() {
         .unwrap();
     let elapsed = start.elapsed();
 
+    println!("Multiplying {m}x{k} x {k}x{n}");
     println!("Time: {elapsed:?}");
 }
 
