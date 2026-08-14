@@ -41,9 +41,28 @@ impl GpuMatrix {
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some(&format!("matrix_buffer_{rows}x{columns}")),
-                    usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+                    usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
                     contents: byte_data,
                 });
+
+        GpuMatrix {
+            gpu_state,
+            gpu_buffer: buffer,
+            rows,
+            columns,
+        }
+    }
+
+    pub fn empty(rows: usize, columns: usize, gpu_state: Rc<GpuState>) -> GpuMatrix {
+        let buffer = gpu_state
+            .gpu_context
+            .device
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("matrix_buffer_{rows}x{columns}")),
+                size: (rows * columns * std::mem::size_of::<f32>()) as u64,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
 
         GpuMatrix {
             gpu_state,
@@ -63,6 +82,10 @@ impl GpuMatrix {
 
     pub fn shape(&self) -> (usize, usize) {
         (self.columns, self.rows)
+    }
+
+    pub fn gpu_buffer(&self) -> &wgpu::Buffer {
+        &self.gpu_buffer
     }
 
     pub async fn to_cpu(&self) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
