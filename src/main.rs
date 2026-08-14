@@ -9,7 +9,7 @@ mod gpu;
 fn main() {
     use std::{rc::Rc, time::Instant};
 
-    use wgpu::wgt::PollType;
+    use wgpu::wgt::{self, PollType};
     let rt = runtime::Runtime::new().unwrap();
     let gpu_state = Rc::new(rt.block_on(GpuState::default()));
     let (m, n, k) = (1024, 1024, 1024);
@@ -21,7 +21,14 @@ fn main() {
     let result = GpuMatrix::new(m, n, &vec![1.0; m * n], gpu_state.clone());
 
     let start = Instant::now();
-    GpuMatrix::matmul(&a, &b, &result);
+    let mut encoder =
+        gpu_state
+            .gpu_context
+            .device
+            .create_command_encoder(&wgt::CommandEncoderDescriptor {
+                label: Some("command_encoder_benchmark"),
+            });
+    GpuMatrix::matmul(&a, &b, &result, &mut encoder);
     gpu_state
         .gpu_context
         .device

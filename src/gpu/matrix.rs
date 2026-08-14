@@ -1,7 +1,7 @@
-use std::{ops::AddAssign, rc::Rc};
+use std::rc::Rc;
 
 use tokio::sync::oneshot;
-use wgpu::{BufferUsages, util::DeviceExt, wgt};
+use wgpu::{BufferUsages, util::DeviceExt};
 
 use crate::gpu::state::GpuState;
 
@@ -111,7 +111,27 @@ impl GpuMatrix {
         Ok(bytemuck::allocation::pod_collect_to_vec(&gpu_data))
     }
 
-    pub fn matmul(a: &GpuMatrix, b: &GpuMatrix, result: &GpuMatrix) {
+    fn record_compute_pass(
+        encoder: &mut wgpu::CommandEncoder,
+        kernel: &wgpu::ComputePipeline,
+        bind_group: &wgpu::BindGroup,
+        workgroups: (u32, u32, u32),
+    ) {
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("compute_pass_matrix"),
+            timestamp_writes: None,
+        });
+        compute_pass.set_pipeline(kernel);
+        compute_pass.set_bind_group(0, bind_group, &[]);
+        compute_pass.dispatch_workgroups(workgroups.0, workgroups.1, workgroups.2);
+    }
+
+    pub fn matmul(
+        a: &GpuMatrix,
+        b: &GpuMatrix,
+        result: &GpuMatrix,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
         assert_eq!(a.columns, b.rows);
         assert_eq!((a.rows, b.columns), (result.rows, result.columns));
         let kernel = &a.gpu_state.kernels.matmul;
@@ -157,33 +177,48 @@ impl GpuMatrix {
                         },
                     ],
                 });
-        let mut encoder =
-            a.gpu_state
-                .gpu_context
-                .device
-                .create_command_encoder(&wgt::CommandEncoderDescriptor {
-                    label: Some("command_encoder_matmul"),
-                });
-        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("compute_pass_matmul"),
-            timestamp_writes: None,
-        });
-        compute_pass.set_pipeline(kernel);
-        compute_pass.set_bind_group(0, &bind_group, &[]);
         let x = b.columns.div_ceil(16) as u32;
         let y = a.rows.div_ceil(16) as u32;
-        compute_pass.dispatch_workgroups(x, y, 1);
-
-        drop(compute_pass);
-
-        let command_buffer = encoder.finish();
-
-        a.gpu_state.gpu_context.queue.submit([command_buffer]);
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, y, 1));
     }
-}
 
-impl AddAssign for GpuMatrix {
-    fn add_assign(&mut self, rhs: Self) {
+    pub fn hadamard(
+        a: &GpuMatrix,
+        b: &GpuMatrix,
+        result: &GpuMatrix,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        assert_eq!(a.shape(), b.shape());
+        assert_eq!(b.shape(), result.shape());
+
+        let kernel = &a.gpu_state.kernels.hadamard;
+        let layout = kernel.get_bind_group_layout(0);
+        let device = &a.gpu_state.gpu_context.device;
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group_hadamard"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: a.gpu_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: b.gpu_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: result.gpu_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let x = (a.rows * a.columns).div_ceil(256) as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, 1, 1));
+    }
+
+    pub fn add_assign(&self, rhs: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) {
         let shapes_match = self.shape() == rhs.shape();
         let row_broadcast = self.rows == rhs.rows && rhs.columns == 1;
         assert!(
@@ -223,21 +258,56 @@ impl AddAssign for GpuMatrix {
             ],
         });
 
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("command_encoder_inplace_add"),
-        });
+        let x = (self.rows * self.columns).div_ceil(256) as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, 1, 1));
+    }
 
-        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("compute_pass_inplace_add"),
-            timestamp_writes: None,
+    pub fn sigmoid(&self, result: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) {
+        assert_eq!(self.shape(), result.shape());
+        let device = &self.gpu_state.gpu_context.device;
+        let kernel = &self.gpu_state.kernels.sigmoid;
+
+        let bind_group_layout = kernel.get_bind_group_layout(0);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group_sigmoid"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.gpu_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: result.gpu_buffer.as_entire_binding(),
+                },
+            ],
         });
-        compute_pass.set_pipeline(&kernel);
-        compute_pass.set_bind_group(0, &bind_group, &[]);
-        let x = (self.rows * self.columns).div_ceil(256);
-        compute_pass.dispatch_workgroups(x as u32, 1, 1);
-        drop(compute_pass);
-        let command_buffer = encoder.finish();
-        self.gpu_state.gpu_context.queue.submit([command_buffer]);
+        let x = (self.rows * self.columns).div_ceil(256) as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, 1, 1));
+    }
+
+    pub fn sigmoid_prime(&self, result: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) {
+        assert_eq!(self.shape(), result.shape());
+        let device = &self.gpu_state.gpu_context.device;
+        let kernel = &self.gpu_state.kernels.sigmoid_prime;
+
+        let bind_group_layout = kernel.get_bind_group_layout(0);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group_sigmoid_prime"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.gpu_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: result.gpu_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let x = (self.rows * self.columns).div_ceil(256) as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, 1, 1));
     }
 }
 
@@ -278,7 +348,17 @@ mod test {
 
         let result_expected = vec![1.0, 0.0, 3.0, 7.0, 8.0, 13.0];
         let result = GpuMatrix::new(2, 3, &vec![1.0; 6], gpu_state.clone());
-        GpuMatrix::matmul(&a, &b, &result);
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_matmul"),
+                });
+        GpuMatrix::matmul(&a, &b, &result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
         let result_actual = result.to_cpu().await.unwrap();
         assert_eq!(result_expected, result_actual);
     }
@@ -305,7 +385,16 @@ mod test {
         let b = GpuMatrix::new(inner, cols, &b_data, gpu_state.clone());
         let result = GpuMatrix::new(rows, cols, &vec![0.0; rows * cols], gpu_state.clone());
 
-        GpuMatrix::matmul(&a, &b, &result);
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_matmul_large_non_square"),
+                });
+        GpuMatrix::matmul(&a, &b, &result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
         let result_actual = result.to_cpu().await.unwrap();
 
         // CPU reference implementation, plain and simple.
@@ -338,7 +427,16 @@ mod test {
         let identity = GpuMatrix::new(3, 3, &identity_data, gpu_state.clone());
         let result = GpuMatrix::new(2, 3, &vec![0.0; 6], gpu_state.clone());
 
-        GpuMatrix::matmul(&a, &identity, &result);
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_matmul_identity"),
+                });
+        GpuMatrix::matmul(&a, &identity, &result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
         let result_actual = result.to_cpu().await.unwrap();
 
         assert_eq!(result_actual, a_data);
@@ -378,7 +476,17 @@ mod test {
         );
 
         let result_pred = vec![5.0, 3.0, 9.0, 10.0, 2.0, 7.0, 11.0, 10.0, 3.0];
-        mat_a += mat_b;
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_inplace_add"),
+                });
+        mat_a.add_assign(&mat_b, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
         let result_actual = mat_a.to_cpu().await.unwrap();
         assert_eq!(result_actual, result_pred);
     }
@@ -399,10 +507,21 @@ mod test {
         let mat_b = GpuMatrix::new(3, 1, &vec![4.0, 9.0, 8.0], Rc::clone(&gpu_state));
 
         let result_pred = vec![5.0, 6.0, 5.0, 12.0, 10.0, 13.0, 17.0, 9.0, 8.0];
-        mat_a += mat_b;
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_inplace_add_broadcast"),
+                });
+        mat_a.add_assign(&mat_b, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
         let result_actual = mat_a.to_cpu().await.unwrap();
         assert_eq!(result_actual, result_pred);
     }
+
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn matrix_inplace_add_broadcast_non_square() {
@@ -420,7 +539,17 @@ mod test {
         let mat_b = GpuMatrix::new(4, 1, &vec![10.0, 20.0, 30.0, 40.0], Rc::clone(&gpu_state));
 
         let result_pred = vec![11.0, 12.0, 23.0, 24.0, 35.0, 36.0, 47.0, 48.0];
-        mat_a += mat_b;
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_inplace_add_broadcast_non_square"),
+                });
+        mat_a.add_assign(&mat_b, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
         let result_actual = mat_a.to_cpu().await.unwrap();
         assert_eq!(result_actual, result_pred);
     }
@@ -434,7 +563,14 @@ mod test {
         let mut mat_a = GpuMatrix::new(3, 3, &vec![0.0; 9], Rc::clone(&gpu_state));
         let mat_b = GpuMatrix::new(2, 2, &vec![0.0; 4], Rc::clone(&gpu_state));
 
-        mat_a += mat_b;
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_incompatible_shapes"),
+                });
+        mat_a.add_assign(&mat_b, &mut encoder);
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -447,6 +583,140 @@ mod test {
         let mut mat_a = GpuMatrix::new(3, 3, &vec![0.0; 9], Rc::clone(&gpu_state));
         let mat_b = GpuMatrix::new(2, 2, &vec![0.0; 4], Rc::clone(&gpu_state));
 
-        mat_a += mat_b;
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_incompatible_shapes"),
+                });
+        mat_a.add_assign(&mat_b, &mut encoder);
+    }
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn sigmoid() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input_data = vec![0.0, 1.0, -1.0, 2.0, -2.0, 10.0];
+        let input = GpuMatrix::new(2, 3, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(2, 3, &vec![0.0; 6], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_sigmoid"),
+                });
+        input.sigmoid(&result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = result.to_cpu().await.unwrap();
+
+        let expected: Vec<f32> = input_data
+            .iter()
+            .map(|x| 1.0 / (1.0 + (-x).exp()))
+            .collect();
+
+        for (actual, expected) in result_actual.iter().zip(expected.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-5,
+                "expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    // Sigmoid should map any input into the open interval (0, 1).
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn sigmoid_output_range() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input_data = vec![-100.0, -10.0, 0.0, 10.0, 100.0];
+        let input = GpuMatrix::new(1, 5, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(1, 5, &vec![0.0; 5], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_sigmoid_output_range"),
+                });
+        input.sigmoid(&result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = result.to_cpu().await.unwrap();
+
+        for value in result_actual {
+            assert!(
+                value >= 0.0 && value <= 1.0,
+                "sigmoid output {value} out of range"
+            );
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn sigmoid_prime() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // sigmoid_prime takes a sigmoid OUTPUT as input, not a raw pre-activation.
+        let sigmoid_output_data = vec![0.5, 0.7310586, 0.26894143, 0.8807971, 0.11920292];
+        let sigmoid_output = GpuMatrix::new(1, 5, &sigmoid_output_data, gpu_state.clone());
+        let result = GpuMatrix::new(1, 5, &vec![0.0; 5], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_sigmoid_prime"),
+                });
+        sigmoid_output.sigmoid_prime(&result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = result.to_cpu().await.unwrap();
+
+        let expected: Vec<f32> = sigmoid_output_data.iter().map(|s| s * (1.0 - s)).collect();
+
+        for (actual, expected) in result_actual.iter().zip(expected.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-5,
+                "expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    // sigmoid_prime is maximized at s = 0.5, where the value is 0.25.
+    // This checks a known analytical property, not just an arbitrary computed value.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn sigmoid_prime_max_at_half() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let sigmoid_output = GpuMatrix::new(1, 1, &vec![0.5], gpu_state.clone());
+        let result = GpuMatrix::new(1, 1, &vec![0.0], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_sigmoid_prime_max"),
+                });
+        sigmoid_output.sigmoid_prime(&result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = result.to_cpu().await.unwrap();
+        assert!((result_actual[0] - 0.25).abs() < 1e-5);
     }
 }
