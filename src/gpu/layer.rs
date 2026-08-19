@@ -9,8 +9,14 @@ use crate::gpu::{matrix::GpuMatrix, state::GpuState};
 struct Layer {
     weights: GpuMatrix,
     bias: GpuMatrix,
-    cached_z: Option<GpuMatrix>,
+    cached_a: Option<GpuMatrix>,
     cached_input: Option<GpuMatrix>,
+    scratch_local_delta: Option<GpuMatrix>,
+    scratch_sigmoid_prime: Option<GpuMatrix>,
+    scratch_row_sum: Option<GpuMatrix>,
+    scratch_transposed_input: Option<GpuMatrix>,
+    scratch_transposed_weights: Option<GpuMatrix>,
+    scratch_weight_update: Option<GpuMatrix>,
     gpu_state: Rc<GpuState>,
 }
 
@@ -24,8 +30,14 @@ impl Layer {
         Layer {
             weights,
             bias,
-            cached_z: None,
+            cached_a: None,
             cached_input: None,
+            scratch_local_delta: None,
+            scratch_sigmoid_prime: None,
+            scratch_row_sum: None,
+            scratch_transposed_input: None,
+            scratch_transposed_weights: None,
+            scratch_weight_update: None,
             gpu_state,
         }
     }
@@ -56,7 +68,13 @@ impl Layer {
             weights,
             bias,
             cached_input: None,
-            cached_z: None,
+            cached_a: None,
+            scratch_local_delta: None,
+            scratch_sigmoid_prime: None,
+            scratch_row_sum: None,
+            scratch_transposed_input: None,
+            scratch_transposed_weights: None,
+            scratch_weight_update: None,
             gpu_state,
         }
     }
@@ -89,8 +107,26 @@ impl Layer {
             weights,
             bias,
             cached_input: None,
-            cached_z: None,
+            cached_a: None,
+            scratch_local_delta: None,
+            scratch_sigmoid_prime: None,
+            scratch_row_sum: None,
+            scratch_transposed_input: None,
+            scratch_transposed_weights: None,
+            scratch_weight_update: None,
             gpu_state,
+        }
+    }
+
+    fn ensure_buffer(
+        buffer: &mut Option<GpuMatrix>,
+        rows: usize,
+        columns: usize,
+        gpu_state: &Rc<GpuState>,
+    ) {
+        match &buffer {
+            Some(i) if rows == i.rows() && columns == i.columns() => {}
+            _ => *buffer = Some(GpuMatrix::empty(rows, columns, Rc::clone(gpu_state))),
         }
     }
 
@@ -100,16 +136,12 @@ impl Layer {
         output: &GpuMatrix,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        match &self.cached_input {
-            Some(i) if x.rows() == i.rows() && x.columns() == i.columns() => {}
-            _ => {
-                self.cached_input = Some(GpuMatrix::empty(
-                    x.rows(),
-                    x.columns(),
-                    Rc::clone(&self.gpu_state),
-                ))
-            }
-        }
+        Self::ensure_buffer(
+            &mut self.cached_input,
+            x.rows(),
+            x.columns(),
+            &self.gpu_state,
+        );
         encoder.copy_buffer_to_buffer(
             x.gpu_buffer(),
             0,
@@ -118,26 +150,117 @@ impl Layer {
             x.gpu_buffer().size(),
         );
 
-        match &self.cached_z {
-            Some(z) if z.rows() == self.weights.rows() && z.columns() == x.columns() => {}
-            _ => {
-                self.cached_z = Some(GpuMatrix::empty(
-                    self.weights.rows(),
-                    x.columns(),
-                    Rc::clone(&self.gpu_state),
-                ))
-            }
-        };
         GpuMatrix::matmul(&self.weights, x, &output, encoder);
+        Self::ensure_buffer(
+            &mut self.cached_a,
+            self.weights.rows(),
+            x.columns(),
+            &self.gpu_state,
+        );
+        output.add_assign(&self.bias, encoder);
+        output.sigmoid(encoder);
         encoder.copy_buffer_to_buffer(
             output.gpu_buffer(),
             0,
-            self.cached_z.as_ref().unwrap().gpu_buffer(),
+            self.cached_a.as_ref().unwrap().gpu_buffer(),
             0,
             output.gpu_buffer().size(),
         );
+    }
 
-        output.add_assign(&self.bias, encoder);
+    fn ensure_backward_buffers(&mut self, delta: &GpuMatrix) {
+        Self::ensure_buffer(
+            &mut self.scratch_local_delta,
+            self.weights.rows(),
+            delta.columns(),
+            &self.gpu_state,
+        );
+        Self::ensure_buffer(
+            &mut self.scratch_sigmoid_prime,
+            self.weights.rows(),
+            delta.columns(),
+            &self.gpu_state,
+        );
+        Self::ensure_buffer(&mut self.scratch_row_sum, delta.rows(), 1, &self.gpu_state);
+        let cached_input_shape = self
+            .cached_input
+            .as_ref()
+            .expect("Run forward pass before backward")
+            .shape();
+        Self::ensure_buffer(
+            &mut self.scratch_transposed_input,
+            cached_input_shape.1,
+            cached_input_shape.0,
+            &self.gpu_state,
+        );
+        let weights_shape = self.weights.shape();
+        Self::ensure_buffer(
+            &mut self.scratch_transposed_weights,
+            weights_shape.1,
+            weights_shape.0,
+            &self.gpu_state,
+        );
+
+        Self::ensure_buffer(
+            &mut self.scratch_weight_update,
+            weights_shape.0,
+            weights_shape.1,
+            &self.gpu_state,
+        );
+    }
+
+    pub fn backward(
+        &mut self,
+        delta: &GpuMatrix,
+        learning_rate: f32,
+        output: &GpuMatrix,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        self.ensure_backward_buffers(delta);
+
+        let local_delta = self
+            .scratch_local_delta
+            .as_ref()
+            .expect("Just ensured local delta exists");
+        let sigmoid_prime = self
+            .scratch_sigmoid_prime
+            .as_ref()
+            .expect("Just ensured scratch sigmoid prime exists");
+        let row_sum = self
+            .scratch_row_sum
+            .as_ref()
+            .expect("Just ensured row sum buffer exists");
+        let transposed_weights = self
+            .scratch_transposed_weights
+            .as_ref()
+            .expect("Just ensured transposed weights buffer exists");
+        let transposed_input = self
+            .scratch_transposed_input
+            .as_ref()
+            .expect("Just ensured transposed input buffer exists");
+        let weight_update = self
+            .scratch_weight_update
+            .as_ref()
+            .expect("Just ensured weight update buffer exists");
+
+        self.cached_a
+            .as_ref()
+            .expect("Run forward before backward")
+            .sigmoid_prime(&sigmoid_prime, encoder);
+        GpuMatrix::hadamard(delta, &sigmoid_prime, &local_delta, encoder);
+
+        GpuMatrix::row_sum(&local_delta, &row_sum, encoder);
+        self.bias
+            .subtract_assign_scaled(&row_sum, learning_rate, encoder);
+        self.cached_input
+            .as_ref()
+            .expect("Run forward beofre backward")
+            .transpose(&transposed_input, encoder);
+        GpuMatrix::matmul(&local_delta, &transposed_input, &weight_update, encoder);
+        self.weights.transpose(&transposed_weights, encoder);
+        GpuMatrix::matmul(&transposed_weights, local_delta, output, encoder);
+        self.weights
+            .subtract_assign_scaled(&weight_update, learning_rate, encoder);
     }
 }
 
@@ -285,7 +408,7 @@ mod test {
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-    async fn forward_computes_matmul_plus_bias() {
+    async fn forward_computes_matmul_plus_bias_then_sigmoid() {
         #[cfg(target_arch = "wasm32")]
         console_error_panic_hook::set_once();
         let gpu_state = Rc::new(GpuState::default().await);
@@ -317,8 +440,16 @@ mod test {
         // matmul(weights, x): weights (3x2): [[1,0],[0,1],[1,1]], x (2x2): [[1,2],[3,4]]
         // matmul result (3x2): [[1,2],[3,4],[4,6]]
         // + bias (broadcast per row): [[2,3],[5,6],[7,9]]
-        let expected = vec![2.0, 3.0, 5.0, 6.0, 7.0, 9.0];
-        assert_eq!(result_actual, expected);
+        // sigmoid(z) = 1 / (1 + e^-z) applied elementwise
+        let linear = [2.0f32, 3.0, 5.0, 6.0, 7.0, 9.0];
+        let expected: Vec<f32> = linear.iter().map(|z| 1.0 / (1.0 + (-z).exp())).collect();
+
+        for (actual, expected) in result_actual.iter().zip(expected.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-5,
+                "expected {expected}, got {actual}"
+            );
+        }
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
@@ -357,10 +488,11 @@ mod test {
         assert_eq!(cached_data, x_data);
     }
 
-    // cached_z holds the pre-bias matmul result, not the final (post-bias) output.
+    // cached_a holds the layer's activation output (post-bias, post-sigmoid) —
+    // exactly what forward() writes into `output`.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-    async fn forward_caches_pre_bias_z() {
+    async fn forward_caches_sigmoid_output() {
         #[cfg(target_arch = "wasm32")]
         console_error_panic_hook::set_once();
         let gpu_state = Rc::new(GpuState::default().await);
@@ -379,28 +511,30 @@ mod test {
                 .gpu_context
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("test_forward_caches_z"),
+                    label: Some("test_forward_caches_a"),
                 });
         layer.forward(&x, &output, &mut encoder);
         gpu_state.gpu_context.queue.submit([encoder.finish()]);
 
-        // weights is identity here, so matmul(weights, x) == x.
-        let cached_z = layer
-            .cached_z
+        let cached_a = layer
+            .cached_a
             .as_ref()
-            .expect("cached_z should be set after forward");
-        let cached_z_data = cached_z.to_cpu().await.unwrap();
+            .expect("cached_a should be set after forward");
+        let cached_a_data = cached_a.to_cpu().await.unwrap();
+        let output_data = output.to_cpu().await.unwrap();
+
         assert_eq!(
-            cached_z_data, x_data,
-            "cached_z should be pre-bias, i.e. equal to matmul result"
+            cached_a_data, output_data,
+            "cached_a should equal the sigmoid output written to `output`"
         );
 
-        // output should have bias added, so it must differ from cached_z.
-        let output_data = output.to_cpu().await.unwrap();
-        assert_ne!(
-            output_data, cached_z_data,
-            "output should include bias, unlike cached_z"
-        );
+        // Sanity check: sigmoid squashes every value into the open interval (0, 1).
+        for value in cached_a_data {
+            assert!(
+                value >= 0.0 && value <= 1.0,
+                "sigmoid output {value} outside [0, 1]"
+            );
+        }
     }
 
     // Changing batch size should trigger a resize (new buffer), not reuse the old one.
@@ -442,10 +576,243 @@ mod test {
         gpu_state.gpu_context.queue.submit([encoder2.finish()]);
 
         let cached_input = layer.cached_input.as_ref().unwrap();
-        let cached_z = layer.cached_z.as_ref().unwrap();
+        let cached_a = layer.cached_a.as_ref().unwrap();
         assert_eq!(cached_input.rows(), 2);
         assert_eq!(cached_input.columns(), 4);
-        assert_eq!(cached_z.rows(), 2);
-        assert_eq!(cached_z.columns(), 4);
+        assert_eq!(cached_a.rows(), 2);
+        assert_eq!(cached_a.columns(), 4);
+    }
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn backward_matches_cpu_reference() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // 2 input neurons, 2 output neurons, batch size 2.
+        let weight_data = vec![1.0, 2.0, 3.0, 4.0]; // 2x2, row-major
+        let bias_data = vec![0.5, -0.5]; // 2x1
+        let weights = GpuMatrix::new(2, 2, &weight_data, gpu_state.clone());
+        let bias = GpuMatrix::new(2, 1, &bias_data, gpu_state.clone());
+        let mut layer = Layer::from_manual_weights(weights, bias, gpu_state.clone());
+
+        let x_data = vec![1.0, 2.0, 3.0, 4.0]; // 2x2 (2 input neurons, batch 2)
+        let x = GpuMatrix::new(2, 2, &x_data, gpu_state.clone());
+        let forward_out = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+
+        let delta_data = vec![0.1, 0.2, 0.3, 0.4]; // 2x2 (out neurons x batch)
+        let delta = GpuMatrix::new(2, 2, &delta_data, gpu_state.clone());
+        let backward_out = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone()); // in neurons x batch
+        let learning_rate = 0.1;
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_backward"),
+                });
+        layer.forward(&x, &forward_out, &mut encoder);
+        layer.backward(&delta, learning_rate, &backward_out, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual_weights = layer.weights.to_cpu().await.unwrap();
+        let actual_bias = layer.bias.to_cpu().await.unwrap();
+        let actual_output = backward_out.to_cpu().await.unwrap();
+
+        // ---- CPU reference, computed independently of the GPU kernels ----
+
+        fn cpu_matmul(
+            a: &[f32],
+            a_rows: usize,
+            a_cols: usize,
+            b: &[f32],
+            b_cols: usize,
+        ) -> Vec<f32> {
+            let mut out = vec![0.0f32; a_rows * b_cols];
+            for r in 0..a_rows {
+                for c in 0..b_cols {
+                    let mut sum = 0.0;
+                    for k in 0..a_cols {
+                        sum += a[r * a_cols + k] * b[k * b_cols + c];
+                    }
+                    out[r * b_cols + c] = sum;
+                }
+            }
+            out
+        }
+
+        fn cpu_transpose(a: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+            let mut out = vec![0.0f32; rows * cols];
+            for r in 0..rows {
+                for c in 0..cols {
+                    out[c * rows + r] = a[r * cols + c];
+                }
+            }
+            out
+        }
+
+        fn cpu_sigmoid(z: &[f32]) -> Vec<f32> {
+            z.iter().map(|v| 1.0 / (1.0 + (-v).exp())).collect()
+        }
+
+        // z = weights * x + bias (broadcast)
+        let z = cpu_matmul(&weight_data, 2, 2, &x_data, 2);
+        let z_with_bias: Vec<f32> = z
+            .iter()
+            .enumerate()
+            .map(|(i, v)| v + bias_data[i / 2]) // row i/2, broadcast bias per row
+            .collect();
+        let a = cpu_sigmoid(&z_with_bias); // cached_a
+
+        // derivative = a * (1 - a)
+        let derivative: Vec<f32> = a.iter().map(|v| v * (1.0 - v)).collect();
+        // local_delta = delta ⊙ derivative
+        let local_delta: Vec<f32> = delta_data
+            .iter()
+            .zip(derivative.iter())
+            .map(|(d, s)| d * s)
+            .collect();
+
+        // bias_update = row_sum(local_delta), 2 rows x 2 cols -> 2 values
+        let bias_update = vec![
+            local_delta[0] + local_delta[1],
+            local_delta[2] + local_delta[3],
+        ];
+        let expected_bias: Vec<f32> = bias_data
+            .iter()
+            .zip(bias_update.iter())
+            .map(|(b, u)| b - u * learning_rate)
+            .collect();
+
+        // weight_update = local_delta * x^T
+        let x_t = cpu_transpose(&x_data, 2, 2);
+        let weight_update = cpu_matmul(&local_delta, 2, 2, &x_t, 2);
+        let expected_weights: Vec<f32> = weight_data
+            .iter()
+            .zip(weight_update.iter())
+            .map(|(w, u)| w - u * learning_rate)
+            .collect();
+
+        // output = weights^T * local_delta, using the ORIGINAL (pre-update) weights
+        let weights_t = cpu_transpose(&weight_data, 2, 2);
+        let expected_output = cpu_matmul(&weights_t, 2, 2, &local_delta, 2);
+
+        for (actual, expected) in actual_bias.iter().zip(expected_bias.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-4,
+                "bias mismatch: expected {expected}, got {actual}"
+            );
+        }
+        for (actual, expected) in actual_weights.iter().zip(expected_weights.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-4,
+                "weights mismatch: expected {expected}, got {actual}"
+            );
+        }
+        for (actual, expected) in actual_output.iter().zip(expected_output.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-4,
+                "output delta mismatch: expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    // Regression test for the ordering bug: the returned delta must use the
+    // ORIGINAL weights (as used during forward), not the weights already
+    // updated earlier in the same backward() call. A non-symmetric weight
+    // matrix with a large learning rate makes pre- vs post-update weights
+    // diverge enough that this test fails clearly if the order is wrong.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn backward_uses_pre_update_weights_for_returned_delta() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let weight_data = vec![10.0, -5.0, 3.0, 8.0]; // 2x2
+        let bias_data = vec![0.0, 0.0];
+        let weights = GpuMatrix::new(2, 2, &weight_data, gpu_state.clone());
+        let bias = GpuMatrix::new(2, 1, &bias_data, gpu_state.clone());
+        let mut layer = Layer::from_manual_weights(weights, bias, gpu_state.clone());
+
+        let x_data = vec![1.0, 0.5, -0.5, 1.0];
+        let x = GpuMatrix::new(2, 2, &x_data, gpu_state.clone());
+        let forward_out = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+
+        let delta_data = vec![1.0, 1.0, 1.0, 1.0];
+        let delta = GpuMatrix::new(2, 2, &delta_data, gpu_state.clone());
+        let backward_out = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+        let learning_rate = 1.0; // large, to make pre/post-update weights diverge sharply
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_backward_ordering"),
+                });
+        layer.forward(&x, &forward_out, &mut encoder);
+        layer.backward(&delta, learning_rate, &backward_out, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual_output = backward_out.to_cpu().await.unwrap();
+
+        fn cpu_matmul(
+            a: &[f32],
+            a_rows: usize,
+            a_cols: usize,
+            b: &[f32],
+            b_cols: usize,
+        ) -> Vec<f32> {
+            let mut out = vec![0.0f32; a_rows * b_cols];
+            for r in 0..a_rows {
+                for c in 0..b_cols {
+                    let mut sum = 0.0;
+                    for k in 0..a_cols {
+                        sum += a[r * a_cols + k] * b[k * b_cols + c];
+                    }
+                    out[r * b_cols + c] = sum;
+                }
+            }
+            out
+        }
+        fn cpu_transpose(a: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+            let mut out = vec![0.0f32; rows * cols];
+            for r in 0..rows {
+                for c in 0..cols {
+                    out[c * rows + r] = a[r * cols + c];
+                }
+            }
+            out
+        }
+        fn cpu_sigmoid(z: &[f32]) -> Vec<f32> {
+            z.iter().map(|v| 1.0 / (1.0 + (-v).exp())).collect()
+        }
+
+        let z = cpu_matmul(&weight_data, 2, 2, &x_data, 2);
+        let z_with_bias: Vec<f32> = z
+            .iter()
+            .enumerate()
+            .map(|(i, v)| v + bias_data[i / 2])
+            .collect();
+        let a = cpu_sigmoid(&z_with_bias);
+        let derivative: Vec<f32> = a.iter().map(|v| v * (1.0 - v)).collect();
+        let local_delta: Vec<f32> = delta_data
+            .iter()
+            .zip(derivative.iter())
+            .map(|(d, s)| d * s)
+            .collect();
+
+        // Correct: transpose of the ORIGINAL weights, before any update.
+        let weights_t = cpu_transpose(&weight_data, 2, 2);
+        let expected_output = cpu_matmul(&weights_t, 2, 2, &local_delta, 2);
+
+        for (actual, expected) in actual_output.iter().zip(expected_output.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-3,
+                "returned delta used the wrong weights (likely post-update instead of pre-update): expected {expected}, got {actual}"
+            );
+        }
     }
 }

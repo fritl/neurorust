@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use tokio::sync::oneshot;
-use wgpu::{BufferUsages, util::DeviceExt};
+use wgpu::{BindGroupEntry, BufferUsages, util::DeviceExt};
 
 use crate::gpu::state::GpuState;
 
@@ -18,6 +18,19 @@ struct MatmulDimensions {
 struct InplaceAddUniform {
     columns_a: u32,
     is_broadcast: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct SubtractAssignScaledUniform {
+    scale: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct DimensionsUniform {
+    rows: u32,
+    columns: u32,
 }
 
 pub struct GpuMatrix {
@@ -285,8 +298,68 @@ impl GpuMatrix {
         Self::record_compute_pass(encoder, kernel, &bind_group, (x, 1, 1));
     }
 
-    pub fn sigmoid(&self, result: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) {
-        assert_eq!(self.shape(), result.shape());
+    pub fn subtract_assign_scaled(
+        &self,
+        rhs: &GpuMatrix,
+        scale: f32,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        assert_eq!(self.shape(), rhs.shape());
+        let device = &self.gpu_state.gpu_context.device;
+        let uniforms = SubtractAssignScaledUniform { scale };
+        let scale_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("buffer_uniform_subtract_assign_scaled_uniform"),
+            contents: bytemuck::cast_slice(&[uniforms]),
+            usage: BufferUsages::UNIFORM,
+        });
+        let kernel = &self.gpu_state.kernels.subtract;
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group_subtract_assign"),
+            layout: &kernel.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: scale_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.gpu_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: rhs.gpu_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let x = (self.rows() * self.columns()).div_ceil(256) as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, 1, 1));
+    }
+
+    pub fn row_sum(input: &GpuMatrix, output: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) {
+        assert_eq!(input.rows(), output.rows());
+        assert_eq!(output.columns(), 1);
+
+        let device = &input.gpu_state.gpu_context.device;
+        let kernel = &input.gpu_state.kernels.row_sum;
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group_row_sum"),
+            layout: &kernel.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: input.gpu_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output.gpu_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let x = input.rows() as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, 1, 1));
+    }
+
+    pub fn sigmoid(&self, encoder: &mut wgpu::CommandEncoder) {
         let device = &self.gpu_state.gpu_context.device;
         let kernel = &self.gpu_state.kernels.sigmoid;
 
@@ -294,16 +367,10 @@ impl GpuMatrix {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bind_group_sigmoid"),
             layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.gpu_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: result.gpu_buffer.as_entire_binding(),
-                },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.gpu_buffer.as_entire_binding(),
+            }],
         });
         let x = (self.rows * self.columns).div_ceil(256) as u32;
         Self::record_compute_pass(encoder, kernel, &bind_group, (x, 1, 1));
@@ -332,12 +399,52 @@ impl GpuMatrix {
         let x = (self.rows * self.columns).div_ceil(256) as u32;
         Self::record_compute_pass(encoder, kernel, &bind_group, (x, 1, 1));
     }
+
+    pub fn transpose(&self, result: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) {
+        assert_eq!(self.rows, result.columns);
+        assert_eq!(self.columns, result.rows);
+
+        let device = &self.gpu_state.gpu_context.device;
+        let kernel = &self.gpu_state.kernels.transpose;
+
+        let uniforms = DimensionsUniform {
+            rows: self.rows as u32,
+            columns: self.columns as u32,
+        };
+
+        let columns_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("buffer_uniform_transpose"),
+            contents: bytemuck::cast_slice(&[uniforms]),
+            usage: BufferUsages::UNIFORM,
+        });
+        let bind_group_layout = kernel.get_bind_group_layout(0);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group_transpose"),
+            layout: &bind_group_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: columns_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: self.gpu_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: result.gpu_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let x = self.columns.div_ceil(16) as u32;
+        let y = self.rows.div_ceil(16) as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, y, 1));
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::gpu::utils::init_gpu;
 
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
@@ -485,7 +592,7 @@ mod test {
         console_error_panic_hook::set_once();
         let gpu_state = Rc::new(GpuState::default().await);
 
-        let mut mat_a = GpuMatrix::new(
+        let mat_a = GpuMatrix::new(
             3,
             3,
             &vec![1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 9.0, 1.0, 0.0],
@@ -521,7 +628,7 @@ mod test {
         console_error_panic_hook::set_once();
         let gpu_state = Rc::new(GpuState::default().await);
 
-        let mut mat_a = GpuMatrix::new(
+        let mat_a = GpuMatrix::new(
             3,
             3,
             &vec![1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 9.0, 1.0, 0.0],
@@ -553,7 +660,7 @@ mod test {
         let gpu_state = Rc::new(GpuState::default().await);
 
         // 4x2 matrix, broadcast a 4x1 column vector across both columns.
-        let mut mat_a = GpuMatrix::new(
+        let mat_a = GpuMatrix::new(
             4,
             2,
             &vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
@@ -583,7 +690,7 @@ mod test {
     async fn matrix_inplace_add_incompatible_shapes_panics() {
         let gpu_state = Rc::new(GpuState::default().await);
 
-        let mut mat_a = GpuMatrix::new(3, 3, &vec![0.0; 9], Rc::clone(&gpu_state));
+        let mat_a = GpuMatrix::new(3, 3, &vec![0.0; 9], Rc::clone(&gpu_state));
         let mat_b = GpuMatrix::new(2, 2, &vec![0.0; 4], Rc::clone(&gpu_state));
 
         let mut encoder =
@@ -624,7 +731,6 @@ mod test {
 
         let input_data = vec![0.0, 1.0, -1.0, 2.0, -2.0, 10.0];
         let input = GpuMatrix::new(2, 3, &input_data, gpu_state.clone());
-        let result = GpuMatrix::new(2, 3, &vec![0.0; 6], gpu_state.clone());
 
         let mut encoder =
             gpu_state
@@ -633,10 +739,10 @@ mod test {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("test_sigmoid"),
                 });
-        input.sigmoid(&result, &mut encoder);
+        input.sigmoid(&mut encoder);
         gpu_state.gpu_context.queue.submit([encoder.finish()]);
 
-        let result_actual = result.to_cpu().await.unwrap();
+        let result_actual = input.to_cpu().await.unwrap();
 
         let expected: Vec<f32> = input_data
             .iter()
@@ -661,7 +767,6 @@ mod test {
 
         let input_data = vec![-100.0, -10.0, 0.0, 10.0, 100.0];
         let input = GpuMatrix::new(1, 5, &input_data, gpu_state.clone());
-        let result = GpuMatrix::new(1, 5, &vec![0.0; 5], gpu_state.clone());
 
         let mut encoder =
             gpu_state
@@ -670,10 +775,10 @@ mod test {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("test_sigmoid_output_range"),
                 });
-        input.sigmoid(&result, &mut encoder);
+        input.sigmoid(&mut encoder);
         gpu_state.gpu_context.queue.submit([encoder.finish()]);
 
-        let result_actual = result.to_cpu().await.unwrap();
+        let result_actual = input.to_cpu().await.unwrap();
 
         for value in result_actual {
             assert!(
@@ -741,5 +846,480 @@ mod test {
 
         let result_actual = result.to_cpu().await.unwrap();
         assert!((result_actual[0] - 0.25).abs() < 1e-5);
+    }
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_inplace_subtract_scaled() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let mat_a = GpuMatrix::new(
+            3,
+            3,
+            &vec![5.0, 3.0, 9.0, 10.0, 2.0, 7.0, 11.0, 10.0, 3.0],
+            Rc::clone(&gpu_state),
+        );
+        let mat_b = GpuMatrix::new(
+            3,
+            3,
+            &vec![4.0, 1.0, 8.0, 7.0, 1.0, 3.0, 2.0, 9.0, 3.0],
+            Rc::clone(&gpu_state),
+        );
+        let scale = 0.5;
+
+        // a - b * scale
+        let result_pred = vec![3.0, 2.5, 5.0, 6.5, 1.5, 5.5, 10.0, 5.5, 1.5];
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_inplace_subtract_scaled"),
+                });
+        mat_a.subtract_assign_scaled(&mat_b, scale, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = mat_a.to_cpu().await.unwrap();
+        for (actual, expected) in result_actual.iter().zip(result_pred.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-5,
+                "expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_inplace_subtract_scaled_zero_is_noop() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let a_data = vec![5.0, 3.0, 9.0, 10.0, 2.0, 7.0, 11.0, 10.0, 3.0];
+        let mat_a = GpuMatrix::new(3, 3, &a_data, Rc::clone(&gpu_state));
+        let mat_b = GpuMatrix::new(
+            3,
+            3,
+            &vec![4.0, 1.0, 8.0, 7.0, 1.0, 3.0, 2.0, 9.0, 3.0],
+            Rc::clone(&gpu_state),
+        );
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_inplace_subtract_scaled_zero"),
+                });
+        mat_a.subtract_assign_scaled(&mat_b, 0.0, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = mat_a.to_cpu().await.unwrap();
+        assert_eq!(
+            result_actual, a_data,
+            "scale of 0.0 should leave mat_a unchanged"
+        );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_inplace_subtract_scaled_one_matches_plain_subtract() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let mat_a = GpuMatrix::new(
+            3,
+            3,
+            &vec![5.0, 3.0, 9.0, 10.0, 2.0, 7.0, 11.0, 10.0, 3.0],
+            Rc::clone(&gpu_state),
+        );
+        let mat_b = GpuMatrix::new(
+            3,
+            3,
+            &vec![4.0, 1.0, 8.0, 7.0, 1.0, 3.0, 2.0, 9.0, 3.0],
+            Rc::clone(&gpu_state),
+        );
+
+        let result_pred = vec![1.0, 2.0, 1.0, 3.0, 1.0, 4.0, 9.0, 1.0, 0.0];
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_inplace_subtract_scaled_one"),
+                });
+        mat_a.subtract_assign_scaled(&mat_b, 1.0, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = mat_a.to_cpu().await.unwrap();
+        assert_eq!(result_actual, result_pred);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    #[should_panic]
+    async fn matrix_inplace_subtract_scaled_incompatible_shapes_panics() {
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let mat_a = GpuMatrix::new(3, 3, &vec![0.0; 9], Rc::clone(&gpu_state));
+        let mat_b = GpuMatrix::new(2, 2, &vec![0.0; 4], Rc::clone(&gpu_state));
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_subtract_scaled_incompatible_shapes"),
+                });
+        mat_a.subtract_assign_scaled(&mat_b, 0.5, &mut encoder);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    #[should_panic]
+    async fn matrix_inplace_subtract_scaled_incompatible_shapes_panics() {
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let mat_a = GpuMatrix::new(3, 3, &vec![0.0; 9], Rc::clone(&gpu_state));
+        let mat_b = GpuMatrix::new(2, 2, &vec![0.0; 4], Rc::clone(&gpu_state));
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_subtract_scaled_incompatible_shapes"),
+                });
+        mat_a.subtract_assign_scaled(&mat_b, 0.5, &mut encoder);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_row_sum() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // 3x4 matrix
+        let input_data = vec![
+            1.0, 2.0, 3.0, 4.0, // row 0 sum = 10
+            5.0, 5.0, 5.0, 5.0, // row 1 sum = 20
+            0.0, -1.0, 2.0, -2.0, // row 2 sum = -1
+        ];
+        let input = GpuMatrix::new(3, 4, &input_data, gpu_state.clone());
+        let output = GpuMatrix::new(3, 1, &vec![0.0; 3], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_row_sum"),
+                });
+        GpuMatrix::row_sum(&input, &output, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = output.to_cpu().await.unwrap();
+        assert_eq!(result_actual, vec![10.0, 20.0, -1.0]);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_row_sum_single_column() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // A single-column matrix should just pass its values through unchanged.
+        let input_data = vec![3.0, -2.0, 7.0];
+        let input = GpuMatrix::new(3, 1, &input_data, gpu_state.clone());
+        let output = GpuMatrix::new(3, 1, &vec![0.0; 3], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_row_sum_single_column"),
+                });
+        GpuMatrix::row_sum(&input, &output, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = output.to_cpu().await.unwrap();
+        assert_eq!(result_actual, input_data);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_row_sum_larger_batch() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // 20 rows x 30 columns, larger than one workgroup (256 threads covers
+        // this in one dispatch, but this still exercises the per-row loop
+        // with a non-trivial column count).
+        let rows = 20;
+        let cols = 30;
+        let input_data: Vec<f32> = (0..rows * cols).map(|i| (i % 7) as f32).collect();
+        let input = GpuMatrix::new(rows, cols, &input_data, gpu_state.clone());
+        let output = GpuMatrix::new(rows, 1, &vec![0.0; rows], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_row_sum_larger_batch"),
+                });
+        GpuMatrix::row_sum(&input, &output, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = output.to_cpu().await.unwrap();
+
+        let mut expected = vec![0.0f32; rows];
+        for r in 0..rows {
+            for c in 0..cols {
+                expected[r] += input_data[r * cols + c];
+            }
+        }
+
+        assert_eq!(result_actual, expected);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    #[should_panic(expected = "assertion")]
+    async fn matrix_row_sum_wrong_output_shape_panics() {
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input = GpuMatrix::new(3, 4, &vec![0.0; 12], gpu_state.clone());
+        // wrong: 2 rows instead of 3, and 2 columns instead of 1
+        let output = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_row_sum_wrong_shape"),
+                });
+        GpuMatrix::row_sum(&input, &output, &mut encoder);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    #[should_panic]
+    async fn matrix_row_sum_wrong_output_shape_panics() {
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input = GpuMatrix::new(3, 4, &vec![0.0; 12], gpu_state.clone());
+        let output = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_row_sum_wrong_shape"),
+                });
+        GpuMatrix::row_sum(&input, &output, &mut encoder);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_transpose() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // 2x3 matrix
+        let input_data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let input = GpuMatrix::new(2, 3, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(3, 2, &vec![0.0; 6], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_transpose"),
+                });
+        input.transpose(&result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = result.to_cpu().await.unwrap();
+
+        // input (2x3): [[1,2,3],[4,5,6]]
+        // transposed (3x2): [[1,4],[2,5],[3,6]]
+        let expected = vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0];
+        assert_eq!(result_actual, expected);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_transpose_square() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input_data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let input = GpuMatrix::new(3, 3, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(3, 3, &vec![0.0; 9], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_transpose_square"),
+                });
+        input.transpose(&result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = result.to_cpu().await.unwrap();
+
+        // input (3x3): [[1,2,3],[4,5,6],[7,8,9]]
+        // transposed:  [[1,4,7],[2,5,8],[3,6,9]]
+        let expected = vec![1.0, 4.0, 7.0, 2.0, 5.0, 8.0, 3.0, 6.0, 9.0];
+        assert_eq!(result_actual, expected);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_transpose_column_vector() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // 4x1 column vector -> 1x4 row vector
+        let input_data = vec![1.0, 2.0, 3.0, 4.0];
+        let input = GpuMatrix::new(4, 1, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(1, 4, &vec![0.0; 4], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_transpose_column_vector"),
+                });
+        input.transpose(&result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = result.to_cpu().await.unwrap();
+        assert_eq!(result_actual, input_data);
+    }
+
+    // Transposing twice should return a matrix equal to the original.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_transpose_twice_is_identity() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input_data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let input = GpuMatrix::new(2, 3, &input_data, gpu_state.clone());
+        let once = GpuMatrix::new(3, 2, &vec![0.0; 6], gpu_state.clone());
+        let twice = GpuMatrix::new(2, 3, &vec![0.0; 6], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_transpose_twice"),
+                });
+        input.transpose(&once, &mut encoder);
+        once.transpose(&twice, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = twice.to_cpu().await.unwrap();
+        assert_eq!(result_actual, input_data);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_transpose_large_non_square() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // 20x30, larger than one workgroup (16x16) in both directions —
+        // catches a swapped-dispatch-axis bug the same way matmul's
+        // large_non_square test does.
+        let rows = 20;
+        let cols = 30;
+        let input_data: Vec<f32> = (0..rows * cols).map(|i| (i % 11) as f32).collect();
+        let input = GpuMatrix::new(rows, cols, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(cols, rows, &vec![0.0; rows * cols], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_transpose_large_non_square"),
+                });
+        input.transpose(&result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let result_actual = result.to_cpu().await.unwrap();
+
+        let mut expected = vec![0.0f32; rows * cols];
+        for r in 0..rows {
+            for c in 0..cols {
+                expected[c * rows + r] = input_data[r * cols + c];
+            }
+        }
+
+        assert_eq!(result_actual, expected);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    #[should_panic(expected = "assertion")]
+    async fn matrix_transpose_wrong_result_shape_panics() {
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input = GpuMatrix::new(2, 3, &vec![0.0; 6], gpu_state.clone());
+        // wrong: should be 3x2, not 2x3
+        let result = GpuMatrix::new(2, 3, &vec![0.0; 6], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_transpose_wrong_shape"),
+                });
+        input.transpose(&result, &mut encoder);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    #[should_panic]
+    async fn matrix_transpose_wrong_result_shape_panics() {
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input = GpuMatrix::new(2, 3, &vec![0.0; 6], gpu_state.clone());
+        let result = GpuMatrix::new(2, 3, &vec![0.0; 6], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_transpose_wrong_shape"),
+                });
+        input.transpose(&result, &mut encoder);
     }
 }
