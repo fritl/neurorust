@@ -4,19 +4,14 @@ use rand::distr::Distribution;
 
 use std::rc::Rc;
 
+use crate::gpu::buffer_pool::BufferPool;
 use crate::gpu::{matrix::GpuMatrix, state::GpuState};
 
-struct Layer {
+pub struct Layer {
     weights: GpuMatrix,
     bias: GpuMatrix,
-    cached_a: Option<GpuMatrix>,
+    pub cached_a: Option<GpuMatrix>,
     cached_input: Option<GpuMatrix>,
-    scratch_local_delta: Option<GpuMatrix>,
-    scratch_sigmoid_prime: Option<GpuMatrix>,
-    scratch_row_sum: Option<GpuMatrix>,
-    scratch_transposed_input: Option<GpuMatrix>,
-    scratch_transposed_weights: Option<GpuMatrix>,
-    scratch_weight_update: Option<GpuMatrix>,
     gpu_state: Rc<GpuState>,
 }
 
@@ -32,12 +27,6 @@ impl Layer {
             bias,
             cached_a: None,
             cached_input: None,
-            scratch_local_delta: None,
-            scratch_sigmoid_prime: None,
-            scratch_row_sum: None,
-            scratch_transposed_input: None,
-            scratch_transposed_weights: None,
-            scratch_weight_update: None,
             gpu_state,
         }
     }
@@ -69,12 +58,6 @@ impl Layer {
             bias,
             cached_input: None,
             cached_a: None,
-            scratch_local_delta: None,
-            scratch_sigmoid_prime: None,
-            scratch_row_sum: None,
-            scratch_transposed_input: None,
-            scratch_transposed_weights: None,
-            scratch_weight_update: None,
             gpu_state,
         }
     }
@@ -108,14 +91,12 @@ impl Layer {
             bias,
             cached_input: None,
             cached_a: None,
-            scratch_local_delta: None,
-            scratch_sigmoid_prime: None,
-            scratch_row_sum: None,
-            scratch_transposed_input: None,
-            scratch_transposed_weights: None,
-            scratch_weight_update: None,
             gpu_state,
         }
+    }
+
+    pub fn weights(&self) -> &GpuMatrix {
+        &self.weights
     }
 
     fn ensure_buffer(
@@ -130,12 +111,7 @@ impl Layer {
         }
     }
 
-    pub fn forward(
-        &mut self,
-        x: &GpuMatrix,
-        output: &GpuMatrix,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
+    pub fn forward(&mut self, x: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) {
         Self::ensure_buffer(
             &mut self.cached_input,
             x.rows(),
@@ -150,63 +126,19 @@ impl Layer {
             x.gpu_buffer().size(),
         );
 
-        GpuMatrix::matmul(&self.weights, x, &output, encoder);
         Self::ensure_buffer(
             &mut self.cached_a,
             self.weights.rows(),
             x.columns(),
             &self.gpu_state,
         );
-        output.add_assign(&self.bias, encoder);
-        output.sigmoid(encoder);
-        encoder.copy_buffer_to_buffer(
-            output.gpu_buffer(),
-            0,
-            self.cached_a.as_ref().unwrap().gpu_buffer(),
-            0,
-            output.gpu_buffer().size(),
-        );
-    }
-
-    fn ensure_backward_buffers(&mut self, delta: &GpuMatrix) {
-        Self::ensure_buffer(
-            &mut self.scratch_local_delta,
-            self.weights.rows(),
-            delta.columns(),
-            &self.gpu_state,
-        );
-        Self::ensure_buffer(
-            &mut self.scratch_sigmoid_prime,
-            self.weights.rows(),
-            delta.columns(),
-            &self.gpu_state,
-        );
-        Self::ensure_buffer(&mut self.scratch_row_sum, delta.rows(), 1, &self.gpu_state);
-        let cached_input_shape = self
-            .cached_input
+        let cached_a = self
+            .cached_a
             .as_ref()
-            .expect("Run forward pass before backward")
-            .shape();
-        Self::ensure_buffer(
-            &mut self.scratch_transposed_input,
-            cached_input_shape.1,
-            cached_input_shape.0,
-            &self.gpu_state,
-        );
-        let weights_shape = self.weights.shape();
-        Self::ensure_buffer(
-            &mut self.scratch_transposed_weights,
-            weights_shape.1,
-            weights_shape.0,
-            &self.gpu_state,
-        );
-
-        Self::ensure_buffer(
-            &mut self.scratch_weight_update,
-            weights_shape.0,
-            weights_shape.1,
-            &self.gpu_state,
-        );
+            .expect("Just ensured a buffer exists");
+        GpuMatrix::matmul(&self.weights, x, &cached_a, encoder);
+        cached_a.add_assign(&self.bias, encoder);
+        cached_a.sigmoid(encoder);
     }
 
     pub fn backward(
@@ -214,51 +146,41 @@ impl Layer {
         delta: &GpuMatrix,
         learning_rate: f32,
         output: &GpuMatrix,
+        buffer_pool: &mut BufferPool,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        self.ensure_backward_buffers(delta);
-
-        let local_delta = self
-            .scratch_local_delta
-            .as_ref()
-            .expect("Just ensured local delta exists");
-        let sigmoid_prime = self
-            .scratch_sigmoid_prime
-            .as_ref()
-            .expect("Just ensured scratch sigmoid prime exists");
-        let row_sum = self
-            .scratch_row_sum
-            .as_ref()
-            .expect("Just ensured row sum buffer exists");
-        let transposed_weights = self
-            .scratch_transposed_weights
-            .as_ref()
-            .expect("Just ensured transposed weights buffer exists");
-        let transposed_input = self
-            .scratch_transposed_input
-            .as_ref()
-            .expect("Just ensured transposed input buffer exists");
-        let weight_update = self
-            .scratch_weight_update
-            .as_ref()
-            .expect("Just ensured weight update buffer exists");
-
+        let sigmoid_prime = buffer_pool.get(self.weights.rows(), delta.columns());
         self.cached_a
             .as_ref()
             .expect("Run forward before backward")
             .sigmoid_prime(&sigmoid_prime, encoder);
+
+        let weights_shape = self.weights.shape();
+        let local_delta = buffer_pool.get(weights_shape.0, delta.columns());
         GpuMatrix::hadamard(delta, &sigmoid_prime, &local_delta, encoder);
 
+        let row_sum = buffer_pool.get(delta.rows(), 1);
         GpuMatrix::row_sum(&local_delta, &row_sum, encoder);
+
         self.bias
             .subtract_assign_scaled(&row_sum, learning_rate, encoder);
+        let cached_input_shape = self
+            .cached_input
+            .as_ref()
+            .expect("Run forward pass before backward")
+            .shape();
+        let transposed_input = buffer_pool.get(cached_input_shape.1, cached_input_shape.0);
         self.cached_input
             .as_ref()
             .expect("Run forward beofre backward")
             .transpose(&transposed_input, encoder);
+
+        let weight_update = buffer_pool.get(weights_shape.0, weights_shape.1);
         GpuMatrix::matmul(&local_delta, &transposed_input, &weight_update, encoder);
+
+        let transposed_weights = buffer_pool.get(weights_shape.1, weights_shape.0);
         self.weights.transpose(&transposed_weights, encoder);
-        GpuMatrix::matmul(&transposed_weights, local_delta, output, encoder);
+        GpuMatrix::matmul(&transposed_weights, &local_delta, output, encoder);
         self.weights
             .subtract_assign_scaled(&weight_update, learning_rate, encoder);
     }
@@ -423,7 +345,6 @@ mod test {
         // input: 2x2 (2 features, batch size 2)
         let x_data = vec![1.0, 2.0, 3.0, 4.0];
         let x = GpuMatrix::new(2, 2, &x_data, gpu_state.clone());
-        let output = GpuMatrix::new(3, 2, &vec![0.0; 6], gpu_state.clone());
 
         let mut encoder =
             gpu_state
@@ -432,10 +353,14 @@ mod test {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("test_forward"),
                 });
-        layer.forward(&x, &output, &mut encoder);
+        layer.forward(&x, &mut encoder);
         gpu_state.gpu_context.queue.submit([encoder.finish()]);
 
-        let result_actual = output.to_cpu().await.unwrap();
+        let cached_a = layer
+            .cached_a
+            .as_ref()
+            .expect("cached_a should be set after forward");
+        let result_actual = cached_a.to_cpu().await.unwrap();
 
         // matmul(weights, x): weights (3x2): [[1,0],[0,1],[1,1]], x (2x2): [[1,2],[3,4]]
         // matmul result (3x2): [[1,2],[3,4],[4,6]]
@@ -465,7 +390,6 @@ mod test {
 
         let x_data = vec![5.0, 6.0, 7.0, 8.0];
         let x = GpuMatrix::new(2, 2, &x_data, gpu_state.clone());
-        let output = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
 
         let mut encoder =
             gpu_state
@@ -474,7 +398,7 @@ mod test {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("test_forward_caches_input"),
                 });
-        layer.forward(&x, &output, &mut encoder);
+        layer.forward(&x, &mut encoder);
         gpu_state.gpu_context.queue.submit([encoder.finish()]);
 
         let cached_input = layer
@@ -488,8 +412,7 @@ mod test {
         assert_eq!(cached_data, x_data);
     }
 
-    // cached_a holds the layer's activation output (post-bias, post-sigmoid) —
-    // exactly what forward() writes into `output`.
+    // cached_a holds the layer's activation output (post-bias, post-sigmoid).
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn forward_caches_sigmoid_output() {
@@ -504,7 +427,6 @@ mod test {
 
         let x_data = vec![1.0, 2.0, 3.0, 4.0];
         let x = GpuMatrix::new(2, 2, &x_data, gpu_state.clone());
-        let output = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
 
         let mut encoder =
             gpu_state
@@ -513,7 +435,7 @@ mod test {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("test_forward_caches_a"),
                 });
-        layer.forward(&x, &output, &mut encoder);
+        layer.forward(&x, &mut encoder);
         gpu_state.gpu_context.queue.submit([encoder.finish()]);
 
         let cached_a = layer
@@ -521,14 +443,9 @@ mod test {
             .as_ref()
             .expect("cached_a should be set after forward");
         let cached_a_data = cached_a.to_cpu().await.unwrap();
-        let output_data = output.to_cpu().await.unwrap();
 
-        assert_eq!(
-            cached_a_data, output_data,
-            "cached_a should equal the sigmoid output written to `output`"
-        );
-
-        // Sanity check: sigmoid squashes every value into the open interval (0, 1).
+        // Sanity check: sigmoid squashes every value into the closed interval [0, 1]
+        // (closed rather than open due to f32 precision at extreme magnitudes).
         for value in cached_a_data {
             assert!(
                 value >= 0.0 && value <= 1.0,
@@ -551,7 +468,6 @@ mod test {
 
         // first forward, batch size 2
         let x1 = GpuMatrix::new(2, 2, &vec![1.0, 2.0, 3.0, 4.0], gpu_state.clone());
-        let output1 = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
         let mut encoder1 =
             gpu_state
                 .gpu_context
@@ -559,12 +475,11 @@ mod test {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("test_forward_resize_1"),
                 });
-        layer.forward(&x1, &output1, &mut encoder1);
+        layer.forward(&x1, &mut encoder1);
         gpu_state.gpu_context.queue.submit([encoder1.finish()]);
 
         // second forward, batch size 4 — must resize
         let x2 = GpuMatrix::new(2, 4, &vec![1.0; 8], gpu_state.clone());
-        let output2 = GpuMatrix::new(2, 4, &vec![0.0; 8], gpu_state.clone());
         let mut encoder2 =
             gpu_state
                 .gpu_context
@@ -572,7 +487,7 @@ mod test {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("test_forward_resize_2"),
                 });
-        layer.forward(&x2, &output2, &mut encoder2);
+        layer.forward(&x2, &mut encoder2);
         gpu_state.gpu_context.queue.submit([encoder2.finish()]);
 
         let cached_input = layer.cached_input.as_ref().unwrap();
@@ -582,6 +497,7 @@ mod test {
         assert_eq!(cached_a.rows(), 2);
         assert_eq!(cached_a.columns(), 4);
     }
+
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn backward_matches_cpu_reference() {
@@ -598,12 +514,12 @@ mod test {
 
         let x_data = vec![1.0, 2.0, 3.0, 4.0]; // 2x2 (2 input neurons, batch 2)
         let x = GpuMatrix::new(2, 2, &x_data, gpu_state.clone());
-        let forward_out = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
 
         let delta_data = vec![0.1, 0.2, 0.3, 0.4]; // 2x2 (out neurons x batch)
         let delta = GpuMatrix::new(2, 2, &delta_data, gpu_state.clone());
         let backward_out = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone()); // in neurons x batch
         let learning_rate = 0.1;
+        let mut buffer_pool = BufferPool::new(gpu_state.clone());
 
         let mut encoder =
             gpu_state
@@ -612,8 +528,14 @@ mod test {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("test_backward"),
                 });
-        layer.forward(&x, &forward_out, &mut encoder);
-        layer.backward(&delta, learning_rate, &backward_out, &mut encoder);
+        layer.forward(&x, &mut encoder);
+        layer.backward(
+            &delta,
+            learning_rate,
+            &backward_out,
+            &mut buffer_pool,
+            &mut encoder,
+        );
         gpu_state.gpu_context.queue.submit([encoder.finish()]);
 
         let actual_weights = layer.weights.to_cpu().await.unwrap();
@@ -720,9 +642,7 @@ mod test {
 
     // Regression test for the ordering bug: the returned delta must use the
     // ORIGINAL weights (as used during forward), not the weights already
-    // updated earlier in the same backward() call. A non-symmetric weight
-    // matrix with a large learning rate makes pre- vs post-update weights
-    // diverge enough that this test fails clearly if the order is wrong.
+    // updated earlier in the same backward() call.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn backward_uses_pre_update_weights_for_returned_delta() {
@@ -738,12 +658,12 @@ mod test {
 
         let x_data = vec![1.0, 0.5, -0.5, 1.0];
         let x = GpuMatrix::new(2, 2, &x_data, gpu_state.clone());
-        let forward_out = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
 
         let delta_data = vec![1.0, 1.0, 1.0, 1.0];
         let delta = GpuMatrix::new(2, 2, &delta_data, gpu_state.clone());
         let backward_out = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
         let learning_rate = 1.0; // large, to make pre/post-update weights diverge sharply
+        let mut buffer_pool = BufferPool::new(gpu_state.clone());
 
         let mut encoder =
             gpu_state
@@ -752,8 +672,14 @@ mod test {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("test_backward_ordering"),
                 });
-        layer.forward(&x, &forward_out, &mut encoder);
-        layer.backward(&delta, learning_rate, &backward_out, &mut encoder);
+        layer.forward(&x, &mut encoder);
+        layer.backward(
+            &delta,
+            learning_rate,
+            &backward_out,
+            &mut buffer_pool,
+            &mut encoder,
+        );
         gpu_state.gpu_context.queue.submit([encoder.finish()]);
 
         let actual_output = backward_out.to_cpu().await.unwrap();
