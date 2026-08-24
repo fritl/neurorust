@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{ops::Div, panic::resume_unwind, rc::Rc};
 
 use tokio::sync::oneshot;
 use wgpu::{BindGroupEntry, BufferUsages, util::DeviceExt};
@@ -33,6 +33,16 @@ struct DimensionsUniform {
     columns: u32,
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct ColumnSliceUniform {
+    rows: u32,
+    columns: u32,
+    start_col: u32,
+    batch_width: u32,
+}
+
+#[derive(Clone)]
 pub struct GpuMatrix {
     gpu_state: Rc<GpuState>,
     gpu_buffer: wgpu::Buffer,
@@ -160,6 +170,241 @@ impl GpuMatrix {
         compute_pass.set_pipeline(kernel);
         compute_pass.set_bind_group(0, bind_group, &[]);
         compute_pass.dispatch_workgroups(workgroups.0, workgroups.1, workgroups.2);
+    }
+
+    fn create_dimension_buffer(&self) -> wgpu::Buffer {
+        let device = &self.gpu_state.gpu_context.device;
+        let dimension = DimensionsUniform {
+            rows: self.rows as u32,
+            columns: self.columns as u32,
+        };
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!(
+                "buffer_uiniform_dimension_matrix_{}x{}",
+                self.rows, self.columns
+            )),
+            contents: bytemuck::cast_slice(&[dimension]),
+            usage: BufferUsages::UNIFORM,
+        })
+    }
+
+    pub fn column_max(&self, result: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) {
+        assert_eq!(self.columns, result.columns);
+        assert_eq!(result.rows, 1);
+
+        let kernel = &self.gpu_state.kernels.column_max;
+        let device = &self.gpu_state.gpu_context.device;
+        let layout = kernel.get_bind_group_layout(0);
+        let dimension_buffer = self.create_dimension_buffer();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group_column_max"),
+            layout: &layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: dimension_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: self.gpu_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: result.gpu_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let x = self.columns.div_ceil(256) as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, 1, 1));
+    }
+
+    pub fn exp_shifted(&self, column_max: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) {
+        assert_eq!(self.columns, column_max.columns);
+        assert_eq!(column_max.rows, 1);
+
+        let kernel = &self.gpu_state.kernels.exp_shifted;
+        let device = &self.gpu_state.gpu_context.device;
+        let layout = kernel.get_bind_group_layout(0);
+        let dimension_buffer = self.create_dimension_buffer();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group_exp_shifted"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dimension_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.gpu_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: column_max.gpu_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let x = self.columns.div_ceil(16) as u32;
+        let y = self.rows.div_ceil(16) as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, y, 1));
+    }
+
+    pub fn column_sum(&self, result: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) {
+        assert_eq!(self.columns, result.columns);
+        assert_eq!(result.rows, 1);
+
+        let kernel = &self.gpu_state.kernels.column_sum;
+        let device = &self.gpu_state.gpu_context.device;
+        let layout = kernel.get_bind_group_layout(0);
+        let dimension_buffer = self.create_dimension_buffer();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group_column_sum"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dimension_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.gpu_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: result.gpu_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let x = self.columns.div_ceil(256) as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, 1, 1));
+    }
+
+    pub fn column_slice(
+        &self,
+        result: &GpuMatrix,
+        start_col: u32,
+        size: u32,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        assert_eq!(self.rows, result.rows);
+        assert_eq!(size, result.columns as u32);
+        assert!(start_col + size <= self.columns as u32);
+
+        let device = &self.gpu_state.gpu_context.device;
+        let kernel = &self.gpu_state.kernels.column_slice;
+        let layout = kernel.get_bind_group_layout(0);
+
+        let dims = ColumnSliceUniform {
+            rows: self.rows as u32,
+            columns: self.columns as u32,
+            start_col: start_col,
+            batch_width: size,
+        };
+
+        let dims_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("buffer_uniform_column_slice"),
+            contents: bytemuck::cast_slice(&[dims]),
+            usage: BufferUsages::UNIFORM,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group_column_slice"),
+            layout: &layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: dims_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: self.gpu_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: result.gpu_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let x = size.div_ceil(16) as u32;
+        let y = self.rows.div_ceil(16) as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, y, 1));
+    }
+
+    pub fn normalize(&self, column_sum: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) {
+        assert_eq!(self.columns, column_sum.columns);
+        assert_eq!(column_sum.rows, 1);
+
+        let kernel = &self.gpu_state.kernels.normalize;
+        let device = &self.gpu_state.gpu_context.device;
+        let layout = kernel.get_bind_group_layout(0);
+        let dimension_buffer = self.create_dimension_buffer();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group_normalize"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dimension_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.gpu_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: column_sum.gpu_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let x = self.columns.div_ceil(16) as u32;
+        let y = self.rows.div_ceil(16) as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, y, 1));
+    }
+
+    pub fn cross_entropy_gradient(
+        &self,
+        result: &GpuMatrix,
+        target_one_hot: &GpuMatrix,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        assert_eq!(self.shape(), result.shape());
+        assert_eq!(self.shape(), target_one_hot.shape());
+
+        let kernel = &self.gpu_state.kernels.cross_entropy_gradient;
+        let device = &self.gpu_state.gpu_context.device;
+        let layout = kernel.get_bind_group_layout(0);
+        let dimension_buffer = self.create_dimension_buffer();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group_cross_entropy_gradient"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dimension_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.gpu_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: result.gpu_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: target_one_hot.gpu_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let x = self.columns.div_ceil(16) as u32;
+        let y = self.rows.div_ceil(16) as u32;
+        Self::record_compute_pass(encoder, kernel, &bind_group, (x, y, 1));
     }
 
     pub fn matmul(
@@ -1321,5 +1566,545 @@ mod test {
                     label: Some("test_transpose_wrong_shape"),
                 });
         input.transpose(&result, &mut encoder);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_column_max() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // 3 rows (classes), 4 columns (batch)
+        let input_data = vec![1.0, 5.0, 2.0, 0.0, 3.0, 2.0, 9.0, 1.0, 2.0, 8.0, 1.0, 4.0];
+        let input = GpuMatrix::new(3, 4, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(1, 4, &vec![0.0; 4], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_max"),
+                });
+        input.column_max(&result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual = result.to_cpu().await.unwrap();
+        // col0: max(1,3,2)=3, col1: max(5,2,8)=8, col2: max(2,9,1)=9, col3: max(0,1,4)=4
+        assert_eq!(actual, vec![3.0, 8.0, 9.0, 4.0]);
+    }
+
+    // Non-square: catches the rows-vs-columns dispatch bug directly.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_column_max_non_square_more_columns_than_rows() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // 2 rows, 10 columns — with the rows-based dispatch bug, only the
+        // first 2 columns would ever get computed; the rest stay at 0.
+        let rows = 2;
+        let columns = 10;
+        let input_data: Vec<f32> = (0..rows * columns).map(|i| (i % 13) as f32).collect();
+        let input = GpuMatrix::new(rows, columns, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(1, columns, &vec![0.0; columns], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_max_non_square"),
+                });
+        input.column_max(&result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual = result.to_cpu().await.unwrap();
+
+        let mut expected = vec![0.0f32; columns];
+        for c in 0..columns {
+            let mut m = input_data[c];
+            for r in 1..rows {
+                let v = input_data[r * columns + c];
+                if v > m {
+                    m = v;
+                }
+            }
+            expected[c] = m;
+        }
+
+        assert_eq!(
+            actual, expected,
+            "column_max likely dispatched with wrong dimension (rows vs columns)"
+        );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_exp_shifted() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input_data = vec![1.0, 2.0, 3.0, 4.0]; // 2x2
+        let mut input = GpuMatrix::new(2, 2, &input_data, gpu_state.clone());
+        let col_max = GpuMatrix::new(1, 2, &vec![3.0, 4.0], gpu_state.clone()); // per-column max, precomputed
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_exp_shifted"),
+                });
+        input.exp_shifted(&col_max, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual = input.to_cpu().await.unwrap();
+
+        // col 0: [1,3], max=3 -> exp(1-3)=exp(-2), exp(3-3)=exp(0)=1
+        // col 1: [2,4], max=4 -> exp(2-4)=exp(-2), exp(4-4)=exp(0)=1
+        let expected = vec![
+            (1.0f32 - 3.0).exp(),
+            (2.0f32 - 4.0).exp(),
+            (3.0f32 - 3.0).exp(),
+            (4.0f32 - 4.0).exp(),
+        ];
+
+        for (a, e) in actual.iter().zip(expected.iter()) {
+            assert!((a - e).abs() < 1e-5, "expected {e}, got {a}");
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_column_sum() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input_data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3x2
+        let input = GpuMatrix::new(3, 2, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(1, 2, &vec![0.0; 2], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_sum"),
+                });
+        input.column_sum(&result, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual = result.to_cpu().await.unwrap();
+        // col0: 1+3+5=9, col1: 2+4+6=12
+        assert_eq!(actual, vec![9.0, 12.0]);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_normalize() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input_data = vec![1.0, 2.0, 3.0, 4.0]; // 2x2
+        let mut input = GpuMatrix::new(2, 2, &input_data, gpu_state.clone());
+        let col_sum = GpuMatrix::new(1, 2, &vec![4.0, 6.0], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_normalize"),
+                });
+        input.normalize(&col_sum, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual = input.to_cpu().await.unwrap();
+        // col0: [1,3]/4 -> [0.25, 0.75]; col1: [2,4]/6 -> [0.333.., 0.666..]
+        let expected = vec![1.0 / 4.0, 2.0 / 6.0, 3.0 / 4.0, 4.0 / 6.0];
+
+        for (a, e) in actual.iter().zip(expected.iter()) {
+            assert!((a - e).abs() < 1e-5, "expected {e}, got {a}");
+        }
+    }
+
+    // Full pipeline: column_max -> exp_shifted -> column_sum -> normalize
+    // should produce a valid softmax distribution (each column sums to 1).
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_softmax_pipeline_columns_sum_to_one() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input_data = vec![2.0, -1.0, 0.5, 1.0, 3.0, 0.5, 0.1, 0.2, 0.5]; // 3x3, 3 classes, batch 3
+        let mut logits = GpuMatrix::new(3, 3, &input_data, gpu_state.clone());
+        let col_max = GpuMatrix::new(1, 3, &vec![0.0; 3], gpu_state.clone());
+        let col_sum = GpuMatrix::new(1, 3, &vec![0.0; 3], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_softmax_pipeline"),
+                });
+        logits.column_max(&col_max, &mut encoder);
+        logits.exp_shifted(&col_max, &mut encoder);
+        logits.column_sum(&col_sum, &mut encoder);
+        logits.normalize(&col_sum, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let softmax_output = logits.to_cpu().await.unwrap();
+
+        for col in 0..3 {
+            let sum: f32 = (0..3).map(|row| softmax_output[row * 3 + col]).sum();
+            assert!(
+                (sum - 1.0).abs() < 1e-4,
+                "column {col} softmax values sum to {sum}, expected 1.0"
+            );
+        }
+        for value in &softmax_output {
+            assert!(
+                *value >= 0.0 && *value <= 1.0,
+                "softmax value {value} out of [0,1]"
+            );
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_cross_entropy_gradient() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // pretend these are already-computed softmax outputs, 2 classes, batch 2
+        let softmax_data = vec![0.3, 0.6, 0.7, 0.4];
+        let softmax_output = GpuMatrix::new(2, 2, &softmax_data, gpu_state.clone());
+        let one_hot = GpuMatrix::new(2, 2, &vec![1.0, 0.0, 0.0, 1.0], gpu_state.clone());
+        let result = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_ce_gradient"),
+                });
+        softmax_output.cross_entropy_gradient(&result, &one_hot, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual = result.to_cpu().await.unwrap();
+
+        // (softmax - one_hot) / columns(=2)
+        let expected: Vec<f32> = softmax_data
+            .iter()
+            .zip([1.0, 0.0, 0.0, 1.0].iter())
+            .map(|(s, t)| (s - t) / 2.0)
+            .collect();
+
+        for (a, e) in actual.iter().zip(expected.iter()) {
+            assert!((a - e).abs() < 1e-5, "expected {e}, got {a}");
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    #[should_panic(expected = "assertion")]
+    async fn matrix_cross_entropy_gradient_shape_mismatch_panics() {
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let softmax_output = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+        let one_hot = GpuMatrix::new(3, 2, &vec![0.0; 6], gpu_state.clone()); // wrong rows
+        let result = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_ce_gradient_mismatch"),
+                });
+        softmax_output.cross_entropy_gradient(&result, &one_hot, &mut encoder);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    #[should_panic]
+    async fn matrix_cross_entropy_gradient_shape_mismatch_panics() {
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let softmax_output = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+        let one_hot = GpuMatrix::new(3, 2, &vec![0.0; 6], gpu_state.clone());
+        let result = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_ce_gradient_mismatch"),
+                });
+        softmax_output.cross_entropy_gradient(&result, &one_hot, &mut encoder);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_column_slice_middle() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // 3 rows, 6 columns
+        let input_data = vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            17.0, 18.0,
+        ];
+        let input = GpuMatrix::new(3, 6, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(3, 2, &vec![0.0; 6], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_slice_middle"),
+                });
+        input.column_slice(&result, 2, 2, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual = result.to_cpu().await.unwrap();
+        // columns 2..4 of each row
+        let expected = vec![3.0, 4.0, 9.0, 10.0, 15.0, 16.0];
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_column_slice_start() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input_data = vec![1.0, 2.0, 3.0, 4.0]; // 2x2
+        let input = GpuMatrix::new(2, 2, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(2, 1, &vec![0.0; 2], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_slice_start"),
+                });
+        input.column_slice(&result, 0, 1, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual = result.to_cpu().await.unwrap();
+        assert_eq!(actual, vec![1.0, 3.0]); // first column of each row
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_column_slice_end() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input_data = vec![1.0, 2.0, 3.0, 4.0]; // 2x2
+        let input = GpuMatrix::new(2, 2, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(2, 1, &vec![0.0; 2], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_slice_end"),
+                });
+        input.column_slice(&result, 1, 1, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual = result.to_cpu().await.unwrap();
+        assert_eq!(actual, vec![2.0, 4.0]); // last column of each row
+    }
+
+    // Full-width slice should reproduce the original matrix exactly.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_column_slice_full_width_is_identity() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let input_data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3
+        let input = GpuMatrix::new(2, 3, &input_data, gpu_state.clone());
+        let result = GpuMatrix::new(2, 3, &vec![0.0; 6], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_slice_full_width"),
+                });
+        input.column_slice(&result, 0, 3, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual = result.to_cpu().await.unwrap();
+        assert_eq!(actual, input_data);
+    }
+
+    // Non-square, larger than one workgroup, to catch a swapped-dispatch-axis
+    // bug the way matmul's/transpose's equivalent tests do.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_column_slice_large_non_square() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        let rows = 20;
+        let columns = 30;
+        let input_data: Vec<f32> = (0..rows * columns).map(|i| (i % 17) as f32).collect();
+        let input = GpuMatrix::new(rows, columns, &input_data, gpu_state.clone());
+
+        let start_col = 10;
+        let size = 15;
+        let result = GpuMatrix::new(rows, size, &vec![0.0; rows * size], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_slice_large_non_square"),
+                });
+        input.column_slice(&result, start_col as u32, size as u32, &mut encoder);
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual = result.to_cpu().await.unwrap();
+
+        let mut expected = vec![0.0f32; rows * size];
+        for r in 0..rows {
+            for c in 0..size {
+                expected[r * size + c] = input_data[r * columns + start_col + c];
+            }
+        }
+
+        assert_eq!(actual, expected);
+    }
+
+    // Mimics the CPU train() loop's last-batch case: batch_size doesn't evenly
+    // divide total columns, so the final slice is smaller than the others.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn matrix_column_slice_partial_last_batch() {
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+
+        // 7 columns total, batch_size 3 -> batches of 3, 3, 1
+        let input_data: Vec<f32> = (0..2 * 7).map(|i| i as f32).collect();
+        let input = GpuMatrix::new(2, 7, &input_data, gpu_state.clone());
+
+        let result = GpuMatrix::new(2, 1, &vec![0.0; 2], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_slice_partial_last_batch"),
+                });
+        input.column_slice(&result, 6, 1, &mut encoder); // last remaining column
+        gpu_state.gpu_context.queue.submit([encoder.finish()]);
+
+        let actual = result.to_cpu().await.unwrap();
+        // column 6 of each row: row0 -> index 6, row1 -> index 13
+        assert_eq!(actual, vec![input_data[6], input_data[13]]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    #[should_panic(expected = "assertion")]
+    async fn matrix_column_slice_out_of_bounds_panics() {
+        let gpu_state = Rc::new(GpuState::default().await);
+        let input = GpuMatrix::new(2, 4, &vec![0.0; 8], gpu_state.clone());
+        let result = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_slice_oob"),
+                });
+        // start_col=3, size=2 -> would read columns 3 and 4, but only 4 columns exist (0..3)
+        input.column_slice(&result, 3, 2, &mut encoder);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    #[should_panic]
+    async fn matrix_column_slice_out_of_bounds_panics() {
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+        let input = GpuMatrix::new(2, 4, &vec![0.0; 8], gpu_state.clone());
+        let result = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_slice_oob"),
+                });
+        input.column_slice(&result, 3, 2, &mut encoder);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    #[should_panic(expected = "assertion")]
+    async fn matrix_column_slice_wrong_result_rows_panics() {
+        let gpu_state = Rc::new(GpuState::default().await);
+        let input = GpuMatrix::new(3, 4, &vec![0.0; 12], gpu_state.clone());
+        let result = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone()); // wrong: 2 rows instead of 3
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_slice_wrong_rows"),
+                });
+        input.column_slice(&result, 0, 2, &mut encoder);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    #[should_panic]
+    async fn matrix_column_slice_wrong_result_rows_panics() {
+        console_error_panic_hook::set_once();
+        let gpu_state = Rc::new(GpuState::default().await);
+        let input = GpuMatrix::new(3, 4, &vec![0.0; 12], gpu_state.clone());
+        let result = GpuMatrix::new(2, 2, &vec![0.0; 4], gpu_state.clone());
+
+        let mut encoder =
+            gpu_state
+                .gpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("test_column_slice_wrong_rows"),
+                });
+        input.column_slice(&result, 0, 2, &mut encoder);
     }
 }

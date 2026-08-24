@@ -9,6 +9,12 @@ pub struct GpuKernels {
     pub subtract: wgpu::ComputePipeline,
     pub row_sum: wgpu::ComputePipeline,
     pub transpose: wgpu::ComputePipeline,
+    pub column_max: wgpu::ComputePipeline,
+    pub exp_shifted: wgpu::ComputePipeline,
+    pub column_sum: wgpu::ComputePipeline,
+    pub normalize: wgpu::ComputePipeline,
+    pub cross_entropy_gradient: wgpu::ComputePipeline,
+    pub column_slice: wgpu::ComputePipeline,
 }
 
 impl GpuKernels {
@@ -20,6 +26,9 @@ impl GpuKernels {
         let subtract = Self::init_subtract_pipeline(gpu_context);
         let row_sum = Self::init_row_sum(gpu_context);
         let transpose = Self::init_transpose(gpu_context);
+        let (column_max, exp_shifted, column_sum, normalize, cross_entropy_gradient) =
+            Self::init_loss(gpu_context);
+        let column_slice = Self::init_column_slice(gpu_context);
         GpuKernels {
             matmul,
             inplace_add,
@@ -29,6 +38,12 @@ impl GpuKernels {
             subtract,
             row_sum,
             transpose,
+            column_max,
+            exp_shifted,
+            column_sum,
+            normalize,
+            cross_entropy_gradient,
+            column_slice,
         }
     }
     fn init_matmul_pipeline(gpu_context: &GpuContext) -> wgpu::ComputePipeline {
@@ -154,6 +169,98 @@ impl GpuKernels {
                 layout: None,
                 module: &module,
                 entry_point: Some("transpose"),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+    }
+
+    fn init_loss(
+        gpu_context: &GpuContext,
+    ) -> (
+        wgpu::ComputePipeline,
+        wgpu::ComputePipeline,
+        wgpu::ComputePipeline,
+        wgpu::ComputePipeline,
+        wgpu::ComputePipeline,
+    ) {
+        let module = gpu_context
+            .device
+            .create_shader_module(wgpu::include_wgsl!("./kernels/loss.wgsl"));
+        let column_max =
+            gpu_context
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("compute_pipeline_column_max"),
+                    layout: None,
+                    module: &module,
+                    entry_point: Some("column_max"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+        let exp_shifted =
+            gpu_context
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("compute_pipeline_exp_shifted"),
+                    layout: None,
+                    module: &module,
+                    entry_point: Some("exp_shifted"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+        let column_sum =
+            gpu_context
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("compute_pipeline_column_sum"),
+                    layout: None,
+                    module: &module,
+                    entry_point: Some("column_sum"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+        let normalize =
+            gpu_context
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("compute_pipeline_normalize"),
+                    layout: None,
+                    module: &module,
+                    entry_point: Some("normalize"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+        let cross_entropy_gradient =
+            gpu_context
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("compute_pipeline_cross_entropy_gradient"),
+                    layout: None,
+                    module: &module,
+                    entry_point: Some("cross_entropy_gradient"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+        (
+            column_max,
+            exp_shifted,
+            column_sum,
+            normalize,
+            cross_entropy_gradient,
+        )
+    }
+
+    fn init_column_slice(gpu_context: &GpuContext) -> wgpu::ComputePipeline {
+        let module = gpu_context
+            .device
+            .create_shader_module(wgpu::include_wgsl!("./kernels/column_slice.wgsl"));
+        gpu_context
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("compute_pipeline_column_slice"),
+                layout: None,
+                module: &module,
+                entry_point: Some("column_slice"),
                 compilation_options: Default::default(),
                 cache: None,
             })
