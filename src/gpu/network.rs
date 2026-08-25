@@ -1,7 +1,6 @@
 use std::rc::Rc;
 
 use rand::SeedableRng;
-use tokio::runtime;
 
 use crate::gpu::{
     buffer_pool::BufferPool, layer::Layer, loss::SoftmaxCrossEntropy, matrix::GpuMatrix,
@@ -57,8 +56,6 @@ impl Network {
             l.forward(current_input, encoder);
             current_input = l.cached_a.as_ref().unwrap();
         }
-        let rt = runtime::Runtime::new().unwrap();
-        let data = rt.block_on(current_input.to_cpu());
         current_input.clone()
     }
 
