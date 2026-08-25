@@ -1,6 +1,7 @@
 use rand::RngExt;
 use rand::distr;
 use rand::distr::Distribution;
+use tokio::runtime;
 
 use std::rc::Rc;
 
@@ -188,7 +189,7 @@ impl Layer {
             );
         }
 
-        let row_sum = buffer_pool.get(delta.rows(), 1);
+        let row_sum = buffer_pool.get(weights_shape.0, 1);
         GpuMatrix::row_sum(&local_delta, &row_sum, encoder);
 
         self.bias

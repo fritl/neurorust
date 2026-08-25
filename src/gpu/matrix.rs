@@ -104,7 +104,7 @@ impl GpuMatrix {
     }
 
     pub fn shape(&self) -> (usize, usize) {
-        (self.columns, self.rows)
+        (self.rows, self.columns)
     }
 
     pub fn gpu_buffer(&self) -> &wgpu::Buffer {

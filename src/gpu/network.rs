@@ -1,13 +1,10 @@
-use std::{ops::Div, rc::Rc};
+use std::rc::Rc;
 
 use rand::SeedableRng;
-use wgpu::wgc::device::queue;
+use tokio::runtime;
 
 use crate::gpu::{
-    buffer_pool::{self, BufferPool},
-    layer::Layer,
-    loss::{self, SoftmaxCrossEntropy},
-    matrix::GpuMatrix,
+    buffer_pool::BufferPool, layer::Layer, loss::SoftmaxCrossEntropy, matrix::GpuMatrix,
     state::GpuState,
 };
 
@@ -60,6 +57,8 @@ impl Network {
             l.forward(current_input, encoder);
             current_input = l.cached_a.as_ref().unwrap();
         }
+        let rt = runtime::Runtime::new().unwrap();
+        let data = rt.block_on(current_input.to_cpu());
         current_input.clone()
     }
 
@@ -87,13 +86,14 @@ impl Network {
         self.buffer_pool.recycle(current_delta);
     }
 
-    pub fn train(&mut self, x: &GpuMatrix, y: &GpuMatrix, expochs: u32, batch_size: usize) {
+    pub fn train(&mut self, x: &GpuMatrix, y: &GpuMatrix, epochs: u32, batch_size: usize) {
         assert_eq!(x.columns(), y.columns());
 
         let num_batches = x.columns().div_ceil(batch_size);
         let device = &Rc::clone(&self.gpu_state).gpu_context.device;
 
-        for i in 0..expochs {
+        for i in 0..epochs {
+            println!("Epoch: {i} / {epochs}");
             for j in 0..num_batches {
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some(&format!("command_encoder_epoch_{i}_batch{j}")),
@@ -136,6 +136,11 @@ impl Network {
                 label: Some("command_encoder_predict"),
             },
         );
-        self.fowrard(x, &mut encoder)
+        let logits = self.fowrard(x, &mut encoder);
+        let output = self.buffer_pool.get(logits.rows(), logits.columns());
+        SoftmaxCrossEntropy::forward(&logits, &output, &mut self.buffer_pool, &mut encoder);
+        let command_buffer = encoder.finish();
+        self.gpu_state.gpu_context.queue.submit([command_buffer]);
+        output
     }
 }

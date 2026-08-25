@@ -29,7 +29,10 @@ pub async fn init_gpu() -> GpuContext {
         .request_device(&wgpu::DeviceDescriptor {
             label: None,
             required_features: Features::empty(),
-            required_limits: Limits::downlevel_defaults(),
+            required_limits: Limits {
+                max_storage_buffer_binding_size: 188160000,
+                ..Limits::downlevel_defaults()
+            },
             experimental_features: ExperimentalFeatures::disabled(),
             memory_hints: MemoryHints::MemoryUsage,
             trace: Trace::Off,
