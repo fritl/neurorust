@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use rand::SeedableRng;
+use wasm_bindgen_test::__rt::wasm_bindgen;
 
 use crate::gpu::{
     buffer_pool::BufferPool, layer::Layer, loss::SoftmaxCrossEntropy, matrix::GpuMatrix,
@@ -124,6 +125,47 @@ impl Network {
                 let command_buffer = encoder.finish();
                 self.gpu_state.gpu_context.queue.submit([command_buffer]);
             }
+        }
+    }
+
+    pub fn train_one(&mut self, x: &GpuMatrix, y: &GpuMatrix, batch_size: usize) {
+        assert_eq!(x.columns(), y.columns());
+
+        let num_batches = x.columns().div_ceil(batch_size);
+        let device = &Rc::clone(&self.gpu_state).gpu_context.device;
+
+        for i in 0..num_batches {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some(&format!("command_encoder__batch{i}")),
+            });
+            let start_col = i * batch_size;
+            let end_col = ((i + 1) * batch_size).min(x.columns());
+            let cur_batch_size = end_col - start_col;
+
+            let scratch_x = self.buffer_pool.get(x.rows(), cur_batch_size);
+            let scratch_y = self.buffer_pool.get(y.rows(), cur_batch_size);
+
+            x.column_slice(
+                &scratch_x,
+                start_col as u32,
+                cur_batch_size as u32,
+                &mut encoder,
+            );
+
+            y.column_slice(
+                &scratch_y,
+                start_col as u32,
+                cur_batch_size as u32,
+                &mut encoder,
+            );
+
+            let output = self.fowrard(&scratch_x, &mut encoder);
+            self.backward(&output, &scratch_y, &mut encoder);
+
+            self.buffer_pool.recycle(scratch_y);
+            self.buffer_pool.recycle(scratch_x);
+            let command_buffer = encoder.finish();
+            self.gpu_state.gpu_context.queue.submit([command_buffer]);
         }
     }
 

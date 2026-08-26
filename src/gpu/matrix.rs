@@ -1649,7 +1649,7 @@ mod test {
         let gpu_state = Rc::new(GpuState::default().await);
 
         let input_data = vec![1.0, 2.0, 3.0, 4.0]; // 2x2
-        let mut input = GpuMatrix::new(2, 2, &input_data, gpu_state.clone());
+        let input = GpuMatrix::new(2, 2, &input_data, gpu_state.clone());
         let col_max = GpuMatrix::new(1, 2, &vec![3.0, 4.0], gpu_state.clone()); // per-column max, precomputed
 
         let mut encoder =
@@ -1712,7 +1712,7 @@ mod test {
         let gpu_state = Rc::new(GpuState::default().await);
 
         let input_data = vec![1.0, 2.0, 3.0, 4.0]; // 2x2
-        let mut input = GpuMatrix::new(2, 2, &input_data, gpu_state.clone());
+        let input = GpuMatrix::new(2, 2, &input_data, gpu_state.clone());
         let col_sum = GpuMatrix::new(1, 2, &vec![4.0, 6.0], gpu_state.clone());
 
         let mut encoder =
@@ -1744,7 +1744,7 @@ mod test {
         let gpu_state = Rc::new(GpuState::default().await);
 
         let input_data = vec![2.0, -1.0, 0.5, 1.0, 3.0, 0.5, 0.1, 0.2, 0.5]; // 3x3, 3 classes, batch 3
-        let mut logits = GpuMatrix::new(3, 3, &input_data, gpu_state.clone());
+        let logits = GpuMatrix::new(3, 3, &input_data, gpu_state.clone());
         let col_max = GpuMatrix::new(1, 3, &vec![0.0; 3], gpu_state.clone());
         let col_sum = GpuMatrix::new(1, 3, &vec![0.0; 3], gpu_state.clone());
 

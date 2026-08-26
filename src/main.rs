@@ -9,7 +9,7 @@ mod gpu;
 mod matrix;
 mod mnist_parser;
 
-/// Returns: (trainx_X, train_y, test_X, test_y)
+/// Returns: (train_X, train_y, test_X, test_y)
 fn load_data(gpu_state: Rc<GpuState>) -> (GpuMatrix, GpuMatrix, GpuMatrix, GpuMatrix) {
     let train_images_file =
         File::open("./data/train-images-idx3-ubyte.gz").expect("Failed to open train images file");
@@ -22,7 +22,7 @@ fn load_data(gpu_state: Rc<GpuState>) -> (GpuMatrix, GpuMatrix, GpuMatrix, GpuMa
         mnist_parser::MnistData::new(&train_labels_file).expect("Failed to parse training labels");
 
     let train_images_matrix = GpuMatrix::new(
-        train_labels.sizes[0] as usize,
+        train_images.sizes[0] as usize,
         (train_images.sizes[1] * train_images.sizes[2]) as usize,
         &train_images
             .data
