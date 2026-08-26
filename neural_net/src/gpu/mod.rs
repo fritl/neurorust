@@ -6,4 +6,4 @@ pub mod matrix;
 pub mod network;
 pub mod state;
 pub mod utils;
-mod wasm_network;
+pub mod wasm_network;

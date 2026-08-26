@@ -1,7 +1,6 @@
 use std::rc::Rc;
 
 use rand::SeedableRng;
-use wasm_bindgen_test::__rt::wasm_bindgen;
 
 use crate::gpu::{
     buffer_pool::BufferPool, layer::Layer, loss::SoftmaxCrossEntropy, matrix::GpuMatrix,
