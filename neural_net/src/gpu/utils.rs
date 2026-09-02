@@ -1,4 +1,7 @@
-use wgpu::{DownlevelFlags, ExperimentalFeatures, Features, Limits, MemoryHints, Trace};
+use wgpu::{
+    DownlevelFlags, ExperimentalFeatures, Features, Limits, MemoryHints, Trace,
+    util::new_instance_with_webgpu_detection,
+};
 
 pub struct GpuContext {
     pub device: wgpu::Device,
@@ -6,7 +9,9 @@ pub struct GpuContext {
 }
 
 pub async fn init_gpu() -> GpuContext {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let instance =
+        new_instance_with_webgpu_detection(wgpu::InstanceDescriptor::new_without_display_handle())
+            .await;
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),

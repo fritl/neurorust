@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
@@ -50,7 +51,7 @@ pub struct WasmNetwork {
     train_y: GpuMatrix,
     test_x: GpuMatrix,
     test_y: GpuMatrix,
-    training: bool,
+    training: Rc<Cell<bool>>,
     input_neurons: usize,
     gpu_state: Rc<GpuState>,
 }
@@ -79,6 +80,9 @@ impl WasmNetwork {
             MnistData::from_bytes(train_labels).expect("Failed to load training labels");
 
         let gpu_state = Rc::new(GpuState::default().await);
+        web_sys::console::log_1(
+            &format!("{:?}", gpu_state.gpu_context.device.adapter_info()).into(),
+        );
 
         let train_x = GpuMatrix::new(
             train_x_raw.sizes[0] as usize,
@@ -110,16 +114,20 @@ impl WasmNetwork {
             ));
         }
         if train_x.rows() != arch[0] {
-            return Err(JsError::new("First layer must match matrix rows"));
+            return Err(JsError::new(&format!(
+                "First layer must match train matrix rows ({})",
+                train_x.rows()
+            )));
         }
-        if train_y.rows() != arch[0] {
-            return Err(JsError::new("Last layer must match matrix rows"));
+        if train_y.rows() != arch[arch.len() - 1] {
+            return Err(JsError::new(&format!(
+                "Last layer must match train matrix rows ({})",
+                train_y.rows()
+            )));
         }
 
         let test_x_raw = MnistData::from_bytes(test_images).expect("Failed to load testing images");
         let test_y_raw = MnistData::from_bytes(test_labels).expect("Failed to load testing labels");
-
-        let gpu_state = Rc::new(GpuState::default().await);
 
         let test_x = GpuMatrix::new(
             test_x_raw.sizes[0] as usize,
@@ -131,7 +139,7 @@ impl WasmNetwork {
 
         let test_y = GpuMatrix::new(
             test_y_raw.sizes[0] as usize,
-            (test_y_raw.sizes[1] * test_y_raw.sizes[2]) as usize,
+            10,
             &test_y_raw
                 .data
                 .iter()
@@ -151,10 +159,16 @@ impl WasmNetwork {
             ));
         }
         if test_x.rows() != arch[0] {
-            return Err(JsError::new("First layer must match matrix rows"));
+            return Err(JsError::new(&format!(
+                "First layer must match test matrix rows ({})",
+                test_x.rows()
+            )));
         }
-        if test_y.rows() != arch[0] {
-            return Err(JsError::new("Last layer must match matrix rows"));
+        if test_y.rows() != arch[arch.len() - 1] {
+            return Err(JsError::new(&format!(
+                "Last layer must match test matrix rows ({})",
+                test_y.rows()
+            )));
         }
 
         let network = Network::from_vec(arch, seed, learning_rate, Rc::clone(&gpu_state));
@@ -163,7 +177,7 @@ impl WasmNetwork {
             network,
             input_neurons: arch[0],
             gpu_state: Rc::clone(&gpu_state),
-            training: false,
+            training: Rc::new(Cell::new(false)),
             train_x,
             train_y,
             test_x,
@@ -193,9 +207,10 @@ impl WasmNetwork {
         batch_size: usize,
         on_progress: js_sys::Function,
     ) -> Vec<f32> {
-        self.training = true;
+        self.training.set(true);
+        let _ = on_progress.call1(&JsValue::NULL, &JsValue::from(0));
         for i in 0..epochs {
-            if !self.training {
+            if !self.training.get() {
                 break;
             }
             self.network
@@ -209,9 +224,9 @@ impl WasmNetwork {
                     let _ = tx.send(());
                 });
             let _ = rx.await;
-            let _ = on_progress.call1(&JsValue::NULL, &JsValue::from(i));
+            let _ = on_progress.call1(&JsValue::NULL, &JsValue::from(i + 1));
         }
-
+        self.training.set(false);
         let pred = self.network.predict(&self.train_x);
         let pred_cpu =
             matrix::Matrix::from_vec(pred.rows(), pred.columns(), pred.to_cpu().await.unwrap());
@@ -245,7 +260,7 @@ impl WasmNetwork {
     }
 
     #[wasm_bindgen]
-    pub fn abort_training(&mut self) {
-        self.training = false;
+    pub fn abort_training(&self) {
+        self.training.set(false);
     }
 }
