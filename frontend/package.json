@@ -1,0 +1,32 @@
+{
+  "name": "vite-template-solid",
+  "version": "0.0.0",
+  "description": "",
+  "type": "module",
+  "scripts": {
+    "start": "vite",
+    "dev": "vite",
+    "build": "vite build",
+    "serve": "vite preview"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "postcss": "^8.5.26",
+    "solid-devtools": "^0.34.5",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.7.2",
+    "vite": "^7.1.4",
+    "vite-plugin-solid": "^2.11.8"
+  },
+  "dependencies": {
+    "@kobalte/core": "^0.13.13",
+    "lucide-solid": "^1.38.0",
+    "solid-js": "^1.9.5",
+    "wasm-backend": "file:./src/wasm-pkg"
+  },
+  "allowScripts": {
+    "file:../../neural_net/pkg": true,
+    "esbuild@0.28.2": true
+  }
+}
