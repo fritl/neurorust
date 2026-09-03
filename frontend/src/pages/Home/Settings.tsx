@@ -14,8 +14,8 @@ type LayerFieldProps = {
 };
 
 export default function Settings() {
-    const { hyperparameter } = useNetworkStore();
-    return <div class="flex flex-col p-3 h-full min-h-0 gap-8 dark:bg-neutral-900 bg-neutral-300 border-r-accent border-r-2 rounded-r-xl">
+    const { hyperparameter, train, createNetwork, isTraining } = useNetworkStore();
+    return <div class="flex flex-col p-3 h-full min-h-0 gap-8 dark:bg-neutral-900 bg-neutral-300 border-r-accent border-r-2 rounded-r-xl row-span-2">
         <Architecture class="overflow-y-auto h-full flex-1 min-h-0 pr-3 [scrollbar-gutter:stable]" />
         <div class="shrink-0 flex flex-col gap-3">
             <Slider minValue={-3} maxValue={1} step={0.01} defaultValue={[-2]} onChange={([v]) => {
@@ -57,7 +57,16 @@ export default function Settings() {
                     <NumberField.Input class="bg-surface p-1 rounded-sm focus-visible:outline-1 focus-visible:outline-secondary" />
                 </NumberField>
             </div>
-            <Button class="bg-accent mt-4 w-full rounded-sm p-1">Train network</Button>
+            <Button class="bg-accent mt-4 w-full rounded-sm p-1 disabled:cursor-not-allowed data-[disabled]:opacity-50
+            data-[disabled]:cursor-not-allowed data-[disabled]:pointer-events-none"
+                disabled={isTraining()} onclick={
+                    async () => {
+                        hyperparameter.setTargetEpochs(hyperparameter.epochs());
+                        await createNetwork()
+                        const [trainAcc, testAcc] = await train()
+                        console.log(trainAcc, testAcc);
+                    }
+                }>Train network</Button>
         </div>
     </div >
 }

@@ -80,9 +80,6 @@ impl WasmNetwork {
             MnistData::from_bytes(train_labels).expect("Failed to load training labels");
 
         let gpu_state = Rc::new(GpuState::default().await);
-        web_sys::console::log_1(
-            &format!("{:?}", gpu_state.gpu_context.device.adapter_info()).into(),
-        );
 
         let train_x = GpuMatrix::new(
             train_x_raw.sizes[0] as usize,

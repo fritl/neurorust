@@ -17,6 +17,8 @@ type HyperParameterType = {
     setBatchSize: Setter<number>,
     epochs: Accessor<number>,
     setEpochs: Setter<number>
+    targetEpochs: Accessor<number>
+    setTargetEpochs: Setter<number>
     seed: Accessor<bigint | null>,
     setSeed: Setter<bigint | null>
 }
@@ -24,10 +26,15 @@ type HyperParameterType = {
 type NetworkStoreType = {
     createNetwork: () => Promise<void>,
     train: () => Promise<[number, number]>,
-    predict: (x: Float32Array) => Promise<Float32Array>,
+    predict: (x: Float32Array) => Promise<void>,
     progress: () => number | null,
     stop_training: () => void,
-    hyperparameter: HyperParameterType
+    prediction: Accessor<number[] | null>,
+    testAcc: Accessor<number | null>,
+    trainAcc: Accessor<number | null>,
+    hyperparameter: HyperParameterType,
+    isTraining: Accessor<boolean>,
+    network: Accessor<WasmNetwork | null>
 }
 
 
@@ -62,20 +69,29 @@ const [architecture, setArchitecture] = createSignal([784, 128, 10]);
 const [lr, setLr] = createSignal(0.01);
 const [batchSize, setBatchSize] = createSignal(128);
 const [epochs, setEpochs] = createSignal(100);
+const [targetEpochs, setTargetEpochs] = createSignal(epochs());
 const [seed, setSeed] = createSignal<bigint | null>(null);
 
-const hyperparameter: HyperParameterType = { architecture, setArchitecture, lr, setLr, batchSize, setBatchSize, epochs, setEpochs, seed, setSeed }
+const hyperparameter: HyperParameterType = { architecture, setArchitecture, lr, setLr, batchSize, setBatchSize, epochs, setEpochs, seed, setSeed, targetEpochs, setTargetEpochs }
 
 const [mnistData] = createSignal<Promise<MnistData>>(fetchMnistData());
 const [network, setNetwork] = createSignal<WasmNetwork | null>(null);
 const [progress, setProgress] = createSignal<number | null>(null);
+const [prediction, setPrediction] = createSignal<number[] | null>(null);
+const [trainAcc, setTrainAcc] = createSignal<number | null>(null);
+const [testAcc, setTestAcc] = createSignal<number | null>(null);
+const [isTraining, setIsTraining] = createSignal(false);
 const wasmInitPromise: Promise<void> = init().then(() => { });
 
 export function useNetworkStore(): NetworkStoreType {
     const createNetwork = async () => {
         await wasmInitPromise;
         const data = await mnistData();
+        setNetwork(null);
         setProgress(null);
+        setPrediction(null);
+        setTrainAcc(null);
+        setTestAcc(null);
 
         const net = await WasmNetwork.network(
             new Uint32Array(hyperparameter.architecture()),
@@ -90,17 +106,29 @@ export function useNetworkStore(): NetworkStoreType {
     };
 
     const train = async (): Promise<[number, number]> => {
+        setIsTraining(true)
         const net = network();
-        if (!net) throw new Error("network not created");
-        const result = await net.train(hyperparameter.epochs(), hyperparameter.epochs(), setProgress)
+        if (!net) {
+            setIsTraining(false);
+            throw new Error("network not created");
+        }
+        setProgress(null);
+        setPrediction(null);
+        setTrainAcc(null);
+        setTestAcc(null);
+        const result = await net.train(hyperparameter.epochs(), hyperparameter.batchSize(), setProgress)
         if (result.length !== 2) throw new Error(`Expected a pair, got ${result.length} values`)
+        setTrainAcc(result[0])
+        setTestAcc(result[1])
+        setIsTraining(false);
         return [result[0], result[1]];
     }
 
     const predict = async (x: Float32Array) => {
         const net = network();
         if (!net) throw new Error("network not created");
-        return await net.predict(x);
+        const pred = await net.predict(x);
+        setPrediction(Array.from(pred));
     }
 
     const stop_training = () => {
@@ -110,5 +138,5 @@ export function useNetworkStore(): NetworkStoreType {
     }
 
 
-    return { createNetwork, train, predict, progress, stop_training, hyperparameter };
+    return { createNetwork, train, predict, progress, stop_training, hyperparameter, prediction, trainAcc, testAcc, isTraining, network };
 }
