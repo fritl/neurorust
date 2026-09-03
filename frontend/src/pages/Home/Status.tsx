@@ -1,6 +1,6 @@
 import { Progress } from "@kobalte/core/progress";
 import { useNetworkStore } from "../../stores/networkStore";
-import { For, Index, Match, Show, Switch } from "solid-js";
+import { Index, Match, Show, Switch } from "solid-js";
 
 export default function Status() {
     const { progress, hyperparameter, prediction, trainAcc, testAcc } = useNetworkStore();
