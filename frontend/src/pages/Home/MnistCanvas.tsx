@@ -97,7 +97,7 @@ export default function MnistCanvas() {
 
     return (
         <div class="flex flex-col justify-center gap-5 place-self-center">
-            <div class="flex gap-3 place-self-center flex-wrap">
+            <div class="flex gap-3 place-self-center flex-wrap justify-center">
                 <canvas
                     ref={bigCanvas}
                     onPointerDown={startDraw}
@@ -115,7 +115,7 @@ export default function MnistCanvas() {
                     class="bg-black rounded-sm border-1 border-surface"
                 />
             </div>
-            <Button onClick={clear} class="bg-secondary p-2 rounded-sm">Clear</Button>
+            <Button onClick={clear} class="bg-secondary p-2 ml-4 mr-4 sm:ml-0 sm:mr-0 rounded-sm">Clear</Button>
         </div>
     );
 }
