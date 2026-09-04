@@ -97,7 +97,7 @@ export default function MnistCanvas() {
 
     return (
         <div class="flex flex-col justify-center gap-5 place-self-center">
-            <div class="flex gap-3 place-self-center">
+            <div class="flex gap-3 place-self-center flex-wrap">
                 <canvas
                     ref={bigCanvas}
                     onPointerDown={startDraw}

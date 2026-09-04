@@ -55,6 +55,9 @@ async function fetchAndDecompress(url: string): Promise<Uint8Array> {
     return new Uint8Array(buffer);
 }
 
+const [isLoading, setIsLoading] = createSignal(true);
+export { isLoading };
+
 async function fetchMnistData(): Promise<MnistData> {
     const [train_images, train_labels, test_images, test_labels] = await Promise.all([
         fetchAndDecompress("/data/train-images-idx3-ubyte.gz"),
@@ -62,6 +65,7 @@ async function fetchMnistData(): Promise<MnistData> {
         fetchAndDecompress("/data/t10k-images-idx3-ubyte.gz"),
         fetchAndDecompress("/data/t10k-labels-idx1-ubyte.gz"),
     ]);
+    setIsLoading(false);
     return { trainImages: train_images, trainLabels: train_labels, testImages: test_images, testLabels: test_labels };
 }
 

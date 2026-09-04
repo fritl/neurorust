@@ -1,9 +1,12 @@
-import type { Component } from 'solid-js';
+import { Show, type Component } from 'solid-js';
 import Home from './pages/Home/Home';
+import { isLoading } from './stores/networkStore';
 
 const App: Component = () => {
     return <>
-        <Home />
+        <Show when={!isLoading()} fallback={"Loading..."}>
+            <Home />
+        </Show>
     </>
 };
 
