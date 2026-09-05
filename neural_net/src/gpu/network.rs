@@ -50,13 +50,26 @@ impl Network {
         }
     }
 
+    pub fn clear_pool(&mut self) {
+        self.buffer_pool.clear();
+    }
+
     pub fn fowrard(&mut self, x: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) -> GpuMatrix {
         let mut current_input = x;
         for l in self.layers.iter_mut() {
             l.forward(current_input, encoder);
             current_input = l.cached_a.as_ref().unwrap();
         }
-        current_input.clone()
+        let (rows, cols) = (current_input.rows(), current_input.columns());
+        let out = self.buffer_pool.get(rows, cols);
+        encoder.copy_buffer_to_buffer(
+            current_input.gpu_buffer(),
+            0,
+            out.gpu_buffer(),
+            0,
+            current_input.gpu_buffer().size(),
+        );
+        out
     }
 
     pub fn backward(&mut self, x: &GpuMatrix, y: &GpuMatrix, encoder: &mut wgpu::CommandEncoder) {
@@ -161,6 +174,7 @@ impl Network {
             let output = self.fowrard(&scratch_x, &mut encoder);
             self.backward(&output, &scratch_y, &mut encoder);
 
+            self.buffer_pool.recycle(output);
             self.buffer_pool.recycle(scratch_y);
             self.buffer_pool.recycle(scratch_x);
             let command_buffer = encoder.finish();

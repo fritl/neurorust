@@ -27,4 +27,8 @@ impl BufferPool {
             .or_default()
             .push(gpu_matrix);
     }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+    }
 }

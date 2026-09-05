@@ -242,6 +242,7 @@ impl WasmNetwork {
             self.test_y.to_cpu().await.unwrap(),
         );
         let test_accuracy = accuracy(&pred_cpu, &true_cpu);
+        self.network.clear_pool();
         vec![train_accuracy, test_accuracy]
     }
 
