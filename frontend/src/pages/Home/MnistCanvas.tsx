@@ -65,13 +65,36 @@ export default function MnistCanvas() {
     }
 
     function downscale() {
+        let curCanvas = bigCanvas;
+        let curW = bigCanvas.width;
+        let curH = bigCanvas.height;
+
+        // Halve the size repeatedly until close to the target.
+        // Each step is a small ratio, so the browser's built-in
+        // interpolation actually averages pixels instead of skipping them.
+        while (curW / 2 > SMALL_SIZE) {
+            const nextW = Math.floor(curW / 2);
+            const nextH = Math.floor(curH / 2);
+
+            const stepCanvas = document.createElement("canvas");
+            stepCanvas.width = nextW;
+            stepCanvas.height = nextH;
+
+            const stepCtx = stepCanvas.getContext("2d")!;
+            stepCtx.imageSmoothingEnabled = true;
+            stepCtx.imageSmoothingQuality = "high";
+            stepCtx.drawImage(curCanvas, 0, 0, curW, curH, 0, 0, nextW, nextH);
+
+            curCanvas = stepCanvas;
+            curW = nextW;
+            curH = nextH;
+        }
+
+        // Final step: land exactly on SMALL_SIZE.
         const smallCtx = smallCanvas.getContext("2d")!;
         smallCtx.imageSmoothingEnabled = true;
-        smallCtx.drawImage(
-            bigCanvas,
-            0, 0, bigCanvas.width, bigCanvas.height,
-            0, 0, SMALL_SIZE, SMALL_SIZE
-        );
+        smallCtx.imageSmoothingQuality = "high";
+        smallCtx.drawImage(curCanvas, 0, 0, curW, curH, 0, 0, SMALL_SIZE, SMALL_SIZE);
     }
 
     function getImageDataAsFloat32(): Float32Array {
