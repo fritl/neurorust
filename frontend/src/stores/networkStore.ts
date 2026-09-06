@@ -69,10 +69,10 @@ async function fetchMnistData(): Promise<MnistData> {
     return { trainImages: train_images, trainLabels: train_labels, testImages: test_images, testLabels: test_labels };
 }
 
-const [architecture, setArchitecture] = createSignal([784, 128, 10]);
-const [lr, setLr] = createSignal(0.01);
+const [architecture, setArchitecture] = createSignal([784, 128, 64, 10]);
+const [lr, setLr] = createSignal(0.1);
 const [batchSize, setBatchSize] = createSignal(128);
-const [epochs, setEpochs] = createSignal(100);
+const [epochs, setEpochs] = createSignal(20);
 const [targetEpochs, setTargetEpochs] = createSignal(epochs());
 const [seed, setSeed] = createSignal<bigint | null>(null);
 

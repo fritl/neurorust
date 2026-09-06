@@ -20,7 +20,7 @@ export default function Settings() {
     rounded-t-xl sm:border-t-0 sm:rounded-t-none">
         <Architecture class="overflow-y-auto h-full min-h-0 min-w-0 max-h-[300px] sm:max-h-none grow shrink basis-auto sm:flex-1 pr-3 [scrollbar-gutter:stable]" />
         <div class="sm:shrink-0 min-w-0 flex flex-col gap-3">
-            <Slider minValue={-3} maxValue={1} step={0.01} defaultValue={[-2]} onChange={([v]) => {
+            <Slider minValue={-3} maxValue={1} step={0.01} defaultValue={[-1]} onChange={([v]) => {
                 hyperparameter.setLr(Math.pow(10, v));
             }}
                 getValueLabel={_ => hyperparameter.lr().toPrecision(4)}
