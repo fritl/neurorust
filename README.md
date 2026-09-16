@@ -26,10 +26,9 @@
 
 ## Features
 
-- **On device.** Neurorust runs directly in your browser. After loading the web page you can even turn off your internet.
-- **WebGPU.** The whole network runs entirely on the GPU using WebGPU for fast results.
-- **Predict MNIST.** Neurorust predicts handwritten digits using one of the most popular datasets.
-- **Adjustable settings.** You can experiment with different settings to get better (or worse) results.
+- **On device.** Neurorust runs completley in your browser using WebGPU. After loading the web page you can even turn off your internet.
+- **Digit prediction.** Neurorust predicts handwritten digits using MNIST, one of the most popular datasets.
+- **Experiment.** You can build you own networks with different settings to get better (or worse) results.
 
 
 ## Running it locally
@@ -70,12 +69,14 @@ Generally if you choose a batch size like 256 training is much faster.
 The more epochs you choose the better the accuracy you get but if you push it
 too far it won't get better.
 
+
 ## How it works
 
-After building the neural network in Rust, I wanted to improve it with GPU
-support. Rust has excellent libraries for this. I used `wgpu` to
-communicate with the GPU and `wasm-pack` to compile everything to WebAssembly.
-This let me run the whole network in the browser with no server needed.
+Everyone knows that the GPU is really powerful for AI. I wanted to see how
+exactly it can make my neural net faster. Rust has excellent libraries for
+this. I used `wgpu` to communicate with the GPU and `wasm-pack` to compile
+everything to WebAssembly. This let me run the whole network in the browser
+on the GPU with  no server needed.
 
 You can try it yourself. Load the website, turn off your internet and
 start training.
@@ -113,10 +114,18 @@ slower or not work at all. Apple restricts GPU access in some cases. If
 training does not work try plugging in your device or trying
 again later.
 
+
 ## Possible improvements
 
-This project taught me a lot. It is my first time using Rust, and my first time working with GPUs and WebAssembly. This left room for improvement:
+Since this was my first time really using rust and the GPU for a project there
+are a lot of locations that could be improved. If I ever revisit this project
+or try to do it again here is what I would improve / do differently:
 
-- **Matrix multiplication:** Could be optimized with tiling and shared memory.
-- **GPU memory management:** Not well optimized.
-- **Code structure:** The overall Rust code could be cleaner. With more planning up front, the architecture would be better.
+- **Matmul optimization.** While the GPU is really good at matrix operations
+  the code to unlock its full potential is not straight forward. Matmul, for
+  example, could probably be improved by at least 10x.
+- **Code overall.** The whole Rust code could be cleaner. Because I have never
+  really used `rust` or `wgpu` it was really hard to plan for everything
+  beforehand. I learned a lot of thigns on the fly so I didn't account for them
+  in my inital plan. Now that I know that I could account for it in the initial
+  plan and write much cleaner code.
