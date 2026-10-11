@@ -26,9 +26,9 @@
 
 ## Features
 
-- **On device.** Neurorust runs completley in your browser using WebGPU. After loading the web page you can even turn off your internet.
+- **On device.** Neurorust runs completely in your browser using WebGPU. After loading the web page you can even turn off your internet.
 - **Digit prediction.** Neurorust predicts handwritten digits using MNIST, one of the most popular datasets.
-- **Experiment.** You can build you own networks with different settings to get better (or worse) results.
+- **Experiment.** You can build your own networks with different settings to get better (or worse) results.
 
 
 ## Running it locally
@@ -84,7 +84,7 @@ start training.
 
 ## Compatibility
 
-WebGPU is a relatively new addition to browser therefore compatibility is still
+WebGPU is a relatively new addition to browsers therefore compatibility is still
 a bit tricky. The easiest way to check compatibility on your device is to visit
 [webgpureport.org](https://webgpureport.org).
 
@@ -109,7 +109,7 @@ There is no simple solution for every distro and browser. You should probably
 consult the Internet or an LLM you trust.
 
 On Apple devices WebGPU is enabled by default since version 26.0. It is
-reccomended that you use Safari because other browsers might be significantly
+recommended that you use Safari because other browsers might be significantly
 slower or not work at all. Apple restricts GPU access in some cases. If
 training does not work try plugging in your device or trying
 again later.
@@ -122,10 +122,10 @@ are a lot of locations that could be improved. If I ever revisit this project
 or try to do it again here is what I would improve / do differently:
 
 - **Matmul optimization.** While the GPU is really good at matrix operations
-  the code to unlock its full potential is not straight forward. Matmul, for
+  the code to unlock its full potential is not straightforward. Matmul, for
   example, could probably be improved by at least 10x.
 - **Code overall.** The whole Rust code could be cleaner. Because I have never
   really used `rust` or `wgpu` it was really hard to plan for everything
-  beforehand. I learned a lot of thigns on the fly so I didn't account for them
-  in my inital plan. Now that I know that I could account for it in the initial
+  beforehand. I learned a lot of things on the fly so I didn't account for them
+  in my initial plan. Now that I know that I could account for it in the initial
   plan and write much cleaner code.
