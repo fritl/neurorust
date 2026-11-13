@@ -2,7 +2,7 @@ import { ComponentProps, Index, Show } from "solid-js"
 import { useNetworkStore } from "../../stores/networkStore"
 import { NumberField } from "@kobalte/core/number-field"
 import { Button } from "@kobalte/core/button"
-import { Plus, Trash2 } from "lucide-solid"
+import { ChevronLeft, ChevronRight, Plus, Trash2 } from "lucide-solid"
 import { Slider } from "@kobalte/core/slider"
 
 type LayerFieldProps = {
@@ -13,63 +13,76 @@ type LayerFieldProps = {
     onRemove: () => void;
 };
 
-export default function Settings() {
+type SettingsProps = {
+    collapsed: boolean;
+    onToggle: () => void;
+};
+
+export default function Settings(props: SettingsProps) {
     const { hyperparameter, train, createNetwork, isTraining } = useNetworkStore();
-    return <div class="flex sm:flex-col p-3 h-full min-h-0 gap-8 dark:bg-neutral-900 bg-neutral-300
+    return <div class={`flex sm:flex-col p-3 h-full min-h-0 gap-8 dark:bg-neutral-900 bg-neutral-300
     border-t-accent sm:border-r-accent border-t-2 sm:border-r-2 row-span-2 order-1 sm:order-none
-    sm:border-t-0">
-        <Architecture class="overflow-y-auto h-full min-h-0 min-w-0 max-h-[300px] sm:max-h-none grow shrink basis-auto sm:flex-1 pr-3 [scrollbar-gutter:stable]" />
-        <div class="sm:shrink-0 min-w-0 flex flex-col gap-3">
-            <Slider minValue={-3} maxValue={1} step={0.01} defaultValue={[-1]} onChange={([v]) => {
-                hyperparameter.setLr(Math.pow(10, v));
-            }}
-                getValueLabel={_ => hyperparameter.lr().toPrecision(4)}
-                class="flex flex-col items-between w-full relative">
-                <div class="flex justify-between">
-                    <Slider.Label class="text-sm">Learning Rate</Slider.Label>
-                    <Slider.ValueLabel />
+    sm:border-t-0 relative ${props.collapsed ? "sm:p-3 sm:gap-0" : ""}`}>
+        <Button onClick={props.onToggle} aria-label={props.collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            class="hidden sm:flex items-center justify-center bg-surface rounded-sm p-1 self-start shrink-0 cursor-pointer">
+            <Show when={props.collapsed} fallback={<ChevronLeft size={16} />}>
+                <ChevronRight size={16} />
+            </Show>
+        </Button>
+        <Show when={!props.collapsed}>
+            <Architecture class="overflow-y-auto h-full min-h-0 min-w-0 max-h-[300px] sm:max-h-none grow shrink basis-auto sm:flex-1 pr-3 [scrollbar-gutter:stable]" />
+            <div class="sm:shrink-0 min-w-0 flex flex-col gap-3">
+                <Slider minValue={-3} maxValue={1} step={0.01} defaultValue={[-1]} onChange={([v]) => {
+                    hyperparameter.setLr(Math.pow(10, v));
+                }}
+                    getValueLabel={_ => hyperparameter.lr().toPrecision(4)}
+                    class="flex flex-col items-between w-full relative">
+                    <div class="flex justify-between">
+                        <Slider.Label class="text-sm">Learning Rate</Slider.Label>
+                        <Slider.ValueLabel />
+                    </div>
+                    <Slider.Track class="bg-surface w-full h-[8px] relative rounded-full">
+                        <Slider.Fill class="bg-secondary h-full absolute rounded-full" />
+                        <Slider.Thumb class="bg-white w-[16px] h-[16px] block rounded-full top-[-4px] border-1 border-secondary">
+                            <Slider.Input />
+                        </Slider.Thumb>
+                    </Slider.Track>
+                </Slider>
+
+                <div class="flex gap-5">
+                    <NumberField
+                        value={hyperparameter.batchSize()}
+                        minValue={1}
+                        maxValue={60000}
+                        onRawValueChange={hyperparameter.setBatchSize}
+                        class="flex flex-col gap-0 min-w-17 flex-grow-1"
+                    >
+                        <NumberField.Label class="flex items-center text-sm">Batch size</NumberField.Label>
+                        <NumberField.Input class="bg-surface p-1 rounded-sm focus-visible:outline-1 focus-visible:outline-secondary" />
+                    </NumberField>
+
+                    <NumberField
+                        value={hyperparameter.epochs()}
+                        minValue={0}
+                        onRawValueChange={hyperparameter.setEpochs}
+                        class="flex flex-col gap-0 min-w-15 flex-grow-1"
+                    >
+                        <NumberField.Label class="flex items-center text-sm">Epochs</NumberField.Label>
+                        <NumberField.Input class="bg-surface p-1 rounded-sm focus-visible:outline-1 focus-visible:outline-secondary" />
+                    </NumberField>
                 </div>
-                <Slider.Track class="bg-surface w-full h-[8px] relative rounded-full">
-                    <Slider.Fill class="bg-secondary h-full absolute rounded-full" />
-                    <Slider.Thumb class="bg-white w-[16px] h-[16px] block rounded-full top-[-4px] border-1 border-secondary">
-                        <Slider.Input />
-                    </Slider.Thumb>
-                </Slider.Track>
-            </Slider>
-
-            <div class="flex gap-5">
-                <NumberField
-                    value={hyperparameter.batchSize()}
-                    minValue={1}
-                    maxValue={60000}
-                    onRawValueChange={hyperparameter.setBatchSize}
-                    class="flex flex-col gap-0 min-w-17 flex-grow-1"
-                >
-                    <NumberField.Label class="flex items-center text-sm">Batch size</NumberField.Label>
-                    <NumberField.Input class="bg-surface p-1 rounded-sm focus-visible:outline-1 focus-visible:outline-secondary" />
-                </NumberField>
-
-                <NumberField
-                    value={hyperparameter.epochs()}
-                    minValue={0}
-                    onRawValueChange={hyperparameter.setEpochs}
-                    class="flex flex-col gap-0 min-w-15 flex-grow-1"
-                >
-                    <NumberField.Label class="flex items-center text-sm">Epochs</NumberField.Label>
-                    <NumberField.Input class="bg-surface p-1 rounded-sm focus-visible:outline-1 focus-visible:outline-secondary" />
-                </NumberField>
+                <Button class="bg-accent mt-4 w-full rounded-sm p-1 disabled:cursor-not-allowed data-[disabled]:opacity-50
+                data-[disabled]:cursor-not-allowed data-[disabled]:pointer-events-none"
+                    disabled={isTraining()} onclick={
+                        async () => {
+                            hyperparameter.setTargetEpochs(hyperparameter.epochs());
+                            await createNetwork()
+                            const [trainAcc, testAcc] = await train()
+                            console.log(trainAcc, testAcc);
+                        }
+                    }>Train network</Button>
             </div>
-            <Button class="bg-accent mt-4 w-full rounded-sm p-1 disabled:cursor-not-allowed data-[disabled]:opacity-50
-            data-[disabled]:cursor-not-allowed data-[disabled]:pointer-events-none"
-                disabled={isTraining()} onclick={
-                    async () => {
-                        hyperparameter.setTargetEpochs(hyperparameter.epochs());
-                        await createNetwork()
-                        const [trainAcc, testAcc] = await train()
-                        console.log(trainAcc, testAcc);
-                    }
-                }>Train network</Button>
-        </div>
+        </Show>
     </div >
 }
 
