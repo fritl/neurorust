@@ -28,7 +28,7 @@ export default function MnistCanvas() {
         ctx = setupCanvas(bigCanvas, BIG_SIZE);
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
-        ctx.lineWidth = 16; // thick line, similar stroke weight to MNIST digits
+        ctx.lineWidth = 30; // thick line, similar stroke weight to MNIST digits
         ctx.strokeStyle = "white";
         ctx.fillStyle = "black";
         ctx.fillRect(0, 0, BIG_SIZE, BIG_SIZE); // black background, MNIST style
@@ -64,15 +64,42 @@ export default function MnistCanvas() {
         predict(x);
     }
 
-    function downscale() {
-        let curCanvas = bigCanvas;
-        let curW = bigCanvas.width;
-        let curH = bigCanvas.height;
+    // MNIST-style normalization: the digit's bounding box is scaled
+    // (uniformly, so it never gets distorted) to fit inside a 20x20 area
+    // and then centered within the 28x28 preview, matching the
+    // preprocessing MNIST itself uses.
+    const NORMALIZED_SIZE = 20;
+
+    function getBoundingBox(imgData: ImageData): { minX: number; minY: number; maxX: number; maxY: number } | null {
+        const { data, width, height } = imgData;
+        let minX = width, minY = height, maxX = -1, maxY = -1;
+        const threshold = 20; // ignore near-black background noise
+
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const value = data[(y * width + x) * 4]; // red channel, image is grayscale
+                if (value > threshold) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+
+        if (maxX < 0 || maxY < 0) return null; // nothing drawn
+        return { minX, minY, maxX, maxY };
+    }
+
+    function downscaleCanvas(source: HTMLCanvasElement, sw: number, sh: number, dw: number, dh: number): HTMLCanvasElement {
+        let curCanvas = source;
+        let curW = sw;
+        let curH = sh;
 
         // Halve the size repeatedly until close to the target.
         // Each step is a small ratio, so the browser's built-in
         // interpolation actually averages pixels instead of skipping them.
-        while (curW / 2 > SMALL_SIZE) {
+        while (curW / 2 > dw && curH / 2 > dh) {
             const nextW = Math.floor(curW / 2);
             const nextH = Math.floor(curH / 2);
 
@@ -90,11 +117,51 @@ export default function MnistCanvas() {
             curH = nextH;
         }
 
-        // Final step: land exactly on SMALL_SIZE.
+        const finalCanvas = document.createElement("canvas");
+        finalCanvas.width = dw;
+        finalCanvas.height = dh;
+        const finalCtx = finalCanvas.getContext("2d")!;
+        finalCtx.imageSmoothingEnabled = true;
+        finalCtx.imageSmoothingQuality = "high";
+        finalCtx.drawImage(curCanvas, 0, 0, curW, curH, 0, 0, dw, dh);
+        return finalCanvas;
+    }
+
+    function downscale() {
         const smallCtx = smallCanvas.getContext("2d")!;
         smallCtx.imageSmoothingEnabled = true;
         smallCtx.imageSmoothingQuality = "high";
-        smallCtx.drawImage(curCanvas, 0, 0, curW, curH, 0, 0, SMALL_SIZE, SMALL_SIZE);
+
+        const fullCtx = bigCanvas.getContext("2d")!;
+        const bbox = getBoundingBox(fullCtx.getImageData(0, 0, bigCanvas.width, bigCanvas.height));
+
+        smallCtx.fillStyle = "black";
+        smallCtx.fillRect(0, 0, SMALL_SIZE, SMALL_SIZE);
+
+        if (!bbox) return; // nothing drawn, leave preview blank
+
+        const { minX, minY, maxX, maxY } = bbox;
+        const bboxW = maxX - minX + 1;
+        const bboxH = maxY - minY + 1;
+
+        // Crop the digit out of the big canvas.
+        const cropCanvas = document.createElement("canvas");
+        cropCanvas.width = bboxW;
+        cropCanvas.height = bboxH;
+        cropCanvas.getContext("2d")!.drawImage(bigCanvas, minX, minY, bboxW, bboxH, 0, 0, bboxW, bboxH);
+
+        // Scale uniformly (same factor on both axes) so the longer side
+        // becomes NORMALIZED_SIZE, keeping the digit's proportions intact.
+        const scale = NORMALIZED_SIZE / Math.max(bboxW, bboxH);
+        const targetW = Math.max(1, Math.round(bboxW * scale));
+        const targetH = Math.max(1, Math.round(bboxH * scale));
+
+        const resized = downscaleCanvas(cropCanvas, bboxW, bboxH, targetW, targetH);
+
+        // Center the normalized digit inside the SMALL_SIZE preview.
+        const destX = Math.round((SMALL_SIZE - targetW) / 2);
+        const destY = Math.round((SMALL_SIZE - targetH) / 2);
+        smallCtx.drawImage(resized, destX, destY);
     }
 
     function getImageDataAsFloat32(): Float32Array {
